@@ -123,7 +123,7 @@ wget https://www.cs.cmu.edu/~custom-diffusion/assets/data.zip
 unzip data.zip
 
 ## run training (30 GB on 2 GPUs)
-bash scripts/finetune_real.sh "cat" data/cat real_reg/samples_cat  cat finetune_addtoken.yaml <pretrained-model-path>
+bash scripts/finetune_real.sh "dog" data/dog real_reg/samples_dog  dog finetune_addtoken.yaml Stable-diffusion/sd-v1-4-full-ema.ckpt
 
 ## save updated model weights
 python src/get_deltas.py --path logs/<folder-name> --newtoken 1
@@ -138,7 +138,6 @@ Our results in the paper are not based on the [clip-retrieval](https://github.co
 ```
 bash scripts/finetune_gen.sh "cat" data/cat gen_reg/samples_cat  cat finetune_addtoken.yaml <pretrained-model-path>
 ```
-
 
 ### Multi-Concept Fine-tuning
 

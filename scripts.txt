@@ -1,0 +1,9 @@
+bash scripts/finetune_gen.sh "dog" data/dog real_reg/samples_dog  dog_genReg finetune_addtoken.yaml Stable-diffusion/sd-v1-4-full-ema.ckpt
+
+bash scripts/finetune_real.sh "dog" data/dog data/retrieve_dog_200  dog_realReg finetune_addtoken.yaml Stable-diffusion/sd-v1-4-full-ema.ckpt 
+
+CUDA_VISIBLE_DEVICES=3 python sample.py --prompt 'photo of a <new1> dog' --delta_ckpt logs/2023-03-26T12-52-38_dog-sdv4/checkpoints/epoch=000005.ckpt --ckpt Stable-diffusion/sd-v1-4-full-ema.ckpt --n_samples 8 --n_iter 2
+
+CUDA_VISIBLE_DEVICES=2 python sample.py --prompt 'photo of a <new1> dog' --delta_ckpt logs/2023-03-27T05-43-18_dog/checkpoints/epoch=000014.ckpt --ckpt Stable-diffusion/sd-v1-4-full-ema.ckpt --n_samples 8 --n_iter 2
+
+CUDA_VISIBLE_DEVICES=3 python sample.py --prompt 'photo of a <new1> dog under the eiffel tower' --delta_ckpt logs/2023-03-27T05-43-18_dog/checkpoints/epoch=000009.ckpt --ckpt Stable-diffusion/sd-v1-4-full-ema.ckpt --n_samples 8 --n_iter 2

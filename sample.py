@@ -162,7 +162,7 @@ def main():
     parser.add_argument(
         "--ddim_steps",
         type=int,
-        default=200,
+        default=50,
         help="number of ddim sampling steps",
     )
     parser.add_argument(
@@ -313,7 +313,7 @@ def main():
     model = load_model_from_config(config, f"{opt.ckpt}")
 
     if opt.delta_ckpt is not None:
-        delta_st = torch.load(opt.delta_ckpt)
+        delta_st = torch.load(opt.delta_ckpt,map_location='cpu')
         embed = None
         if 'embed' in delta_st['state_dict']:
             embed = delta_st['state_dict']['embed'].reshape(-1,768)
@@ -345,6 +345,8 @@ def main():
     else:
         os.makedirs(opt.outdir, exist_ok=True)
         outpath = opt.outdir
+
+    save_tag = os.path.basename(opt.delta_ckpt) if opt.delta_ckpt else opt.ckpt.split('/')[-1]
 
     batch_size = opt.n_samples
     n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
@@ -417,7 +419,7 @@ def main():
                         grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
                         img = Image.fromarray(grid.astype(np.uint8))
                         sampling_method = 'plms' if opt.plms else 'ddim'
-                        img.save(os.path.join(outpath, f'{prompts[0].replace(" ", "-")}_{opt.scale}_{sampling_method}_{opt.ddim_steps}_{opt.ddim_eta}.png'))
+                        img.save(os.path.join(outpath, f'{save_tag}_{prompts[0].replace(" ", "-")}_{opt.scale}_{sampling_method}_{opt.ddim_steps}_{opt.ddim_eta}.png'))
                         if opt.wandb_log:
                             wandb.log({  f'{prompts[0].replace(" ", "-")}_{opt.scale}_{sampling_method}_{opt.ddim_steps}_{opt.ddim_eta}.png'  : [wandb.Image(img)]})
                         grid_count += 1

@@ -310,12 +310,20 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
         hidden_states = self.transformer.text_model.embeddings(input_ids=tokens)
         hidden_states = (1-indices)*hidden_states.detach() + indices*hidden_states
 
-        z = self.custom_forward(hidden_states, tokens)
+        return hidden_states, tokens
 
-        return z
 
     def encode(self, text):
-        return self(text)
+        hidden_states, tokens = self(text)
+        z = self.custom_forward(hidden_states, tokens)
+        return z
+
+    def encode_text(self, text):
+        hidden_states, tokens = self(text)
+        z = self.custom_forward(hidden_states, tokens)
+        stc_z = z[torch.arange(z.shape[0]), [torch.where(tokens[i] == 49407,)[0][0] for i in range(len(tokens))]]
+        return z, stc_z
+        
 
 
 if __name__ == "__main__":

@@ -7,8 +7,11 @@
 # 5th arg: config name
 # 6th arg: pretrained model path
 
-ARRAY=()
+num=2
+memory=41000
+source ~/bin/check_gpu $num $memory
 
+ARRAY=()
 for i in "$@"
 do 
     echo $i
@@ -16,7 +19,7 @@ do
 done
 
 
-python src/retrieve.py --target_name "${ARRAY[0]}" --outpath ${ARRAY[2]}
+# python src/retrieve.py --target_name "${ARRAY[0]}" --outpath ${ARRAY[2]}
 
 if [ "${ARRAY[4]}" == "finetune.yaml" ]; then
     python -u  train.py \
@@ -38,6 +41,7 @@ else
             --reg_datapath "${ARRAY[2]}/images.txt" \
             --reg_caption "${ARRAY[2]}/caption.txt" \
             --modifier_token "<new1>" \
-            --name "${ARRAY[3]}-sdv4"
+            --name "${ARRAY[3]}-sdv4" \
+            --no-test
 fi 
 

@@ -1,0 +1,40 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },   
+        {
+            "name": "Python: finetune cldm custom",
+            "type": "python",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--base", "configs/custom-diffusion/finetune_addtoken2.yaml",
+                "-t",
+                "--gpus", "3,7",
+                "--resume-from-checkpoint-custom","Stable-diffusion/sd-v1-4-full-ema.ckpt",
+                "--caption","<new1> dog",
+                "--datapath", "data/dog",
+                // "--reg_datapath","gen_reg/edn_subject2_train20_realistic6",
+                // "--reg_caption","woman",
+                "--modifier_token","<new1>",
+                "--name","dog",
+                "--no-test"
+            ],
+            "env": {
+                "CUDA_VISIBLE_1EVICES": "0,1"
+            }
+        }
+    ]
+}
