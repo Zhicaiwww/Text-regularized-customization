@@ -106,12 +106,16 @@ from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, Autoenc
 import numpy as np
 import os
 
-REG_PROMPTS = ['a dog','a bully dog','a red dog']
 # 
-NEW_PROMPTS = ['a <new1> dog']
-global ATTN_REG_LOSS
+global ATTN_REG_K_LOSS
+global ATTN_REG_V_LOSS
+global ATTN_NORM_K_LOSS
+global ATTN_NORM_V_LOSS
 global REG_EMBEDDING
-ATTN_REG_LOSS=[]
+ATTN_REG_K_LOSS=[]
+ATTN_REG_V_LOSS=[]
+ATTN_NORM_K_LOSS=[]
+ATTN_NORM_V_LOSS=[]
 # REG_EMBEDDING=[]
 def update_dict(state:dict, key, value):
     if key in state.keys():
@@ -125,18 +129,34 @@ class CustomDiffusion(LatentDiffusion):
                  freeze_model='crossattn-kv',
                  cond_stage_trainable=False,
                  add_token=False,
+                 reg_k_scale=0,
+                 reg_v_scale=0,
+                 norm_k_scale=0.1,
+                 norm_v_scale=0.1,
+                 reg_scale=0,
+                 norm_scale=0,
+                 reg_prompt=['photo of a dog'],
+                 new_prompt=['a <new1> dog'],
                  *args, **kwargs):
 
+        # self.new_prompt = list(new_prompt)
+        self.reg_prompt = list(reg_prompt)
+        # self.reg_prompt = ['photo of a dog']
+        print(self.reg_prompt)
         self.freeze_model = freeze_model
         self.add_token = add_token
         self.cond_stage_trainable = cond_stage_trainable
+        self.reg_k_scale=reg_k_scale
+        self.reg_v_scale=reg_v_scale
+        self.norm_k_scale = norm_k_scale
+        self.norm_v_scale = norm_v_scale
         super().__init__(cond_stage_trainable=cond_stage_trainable, *args, **kwargs)
 
         if self.freeze_model == 'crossattn-kv':
             for x in self.model.diffusion_model.named_parameters():
                 if 'transformer_blocks' not in x[0]:
                     x[1].requires_grad = False
-                elif 'attn2.to_v' in x[0]:
+                elif not ('attn2.to_k' in x[0] or 'attn2.to_v' in x[0]):
                     x[1].requires_grad = False
                 else:
                     x[1].requires_grad = True
@@ -181,43 +201,43 @@ class CustomDiffusion(LatentDiffusion):
         if self.global_step == 0:
             self.statics = {}
             # 2,N,768
-            self.c_reg, self.c_reg_start= self.cond_stage_model.encode_text(REG_PROMPTS)
+            self.c_reg, self.c_reg_start= self.cond_stage_model.encode_text(self.reg_prompt)
             # 2,768
             self.statics = update_dict(self.statics, 'c_reg_global', self.c_reg_start)
 
-        if self.global_step % 5 == 0:
-            print("checkpointing condition mapping vector in self.global_step:", self.global_step)
-            c_new, c_new_start = self.cond_stage_model.encode_text(NEW_PROMPTS)
-            c_sim = einsum("nc, mc -> nm", F.normalize(c_new_start,dim=-1), F.normalize(self.c_reg_start,dim=-1))
-            # find if self.statics is empty, create a list in self. statics and append c_sim ,else append c_sim to the list
-            self.statics = update_dict(self.statics, 'c_new_global', c_new_start.cpu().numpy())
-            self.statics = update_dict(self.statics, 'c_sim_global', c_sim.cpu().numpy())
-            print(c_sim)
-            # print(self.statics['c_sim'])
-            model_state = self.model.diffusion_model.state_dict()
-            # for key in self.to_k_list:
-            #     if 'attn2.to_k' in key:
-            #         k_mat = model_state[key].data.detach()
-            #         # mat_kc = einsum("nc,mc-> mn", k_mat, c_new_start)
-            #         # mat_kc_reg = einsum("nc,mc->mn",k_mat, self.c_reg_start, )
-            #         self.statics = update_dict(self.statics, key, k_mat.cpu().numpy())
+        # if self.global_step % 5 == 0:
+        #     print("checkpointing condition mapping vector in self.global_step:", self.global_step)
+        #     c_new, c_new_start = self.cond_stage_model.encode_text(self.new_prompt)
+        #     c_sim = einsum("nc, mc -> nm", F.normalize(c_new_start,dim=-1), F.normalize(self.c_reg_start,dim=-1))
+        #     # find if self.statics is empty, create a list in self. statics and append c_sim ,else append c_sim to the list
+        #     self.statics = update_dict(self.statics, 'c_new_global', c_new_start.cpu().numpy())
+        #     self.statics = update_dict(self.statics, 'c_sim_global', c_sim.cpu().numpy())
+        #     # print(c_sim)
+        #     # print(self.statics['c_sim'])
+        #     model_state = self.model.diffusion_model.state_dict()
+        #     # for key in self.to_k_list:
+        #     #     if 'attn2.to_k' in key:
+        #     #         k_mat = model_state[key].data.detach()
+        #     #         # mat_kc = einsum("nc,mc-> mn", k_mat, c_new_start)
+        #     #         # mat_kc_reg = einsum("nc,mc->mn",k_mat, self.c_reg_start, )
+        #     #         self.statics = update_dict(self.statics, key, k_mat.cpu().numpy())
 
-            for key in self.to_v_list:
-                if 'attn2.to_v' in key:
-                    v_mat = model_state[key].data.detach()
-                    # mat_vc = einsum("nc,mc-> mn ",v_mat, c_new_start)
-                    # mat_vc_reg = einsum("nc,mc-> mn ",v_mat, self.c_reg_start)
-                    self.statics = update_dict(self.statics, key, v_mat.cpu().numpy())
-                    torch.save(self.statics, os.path.join(self.logger.save_dir,'statics.pt'))
+        #     for key in self.to_v_list:
+        #         if 'attn2.to_v' in key:
+        #             v_mat = model_state[key].data.detach()
+        #             # mat_vc = einsum("nc,mc-> mn ",v_mat, c_new_start)
+        #             # mat_vc_reg = einsum("nc,mc-> mn ",v_mat, self.c_reg_start)
+        #             self.statics = update_dict(self.statics, key, v_mat.cpu().numpy())
+        #             torch.save(self.statics, os.path.join(self.logger.save_dir,'statics.pt'))
 
-    @rank_zero_only
-    def on_train_end(self) -> None:
-        torch.save(self.statics, os.path.join(self.logger.save_dir,'statics.pt'))
-        super().on_train_end()
+    # @rank_zero_only
+    # def on_train_end(self) -> None:
+    #     torch.save(self.statics, os.path.join(self.logger.save_dir,'statics.pt'))
+    #     super().on_train_end()
 
     def on_train_start(self) -> None:
         import copy
-        REG_EMBEDDING , _= self.cond_stage_model.encode_text(REG_PROMPTS)
+        REG_EMBEDDING , _= self.cond_stage_model.encode_text(self.reg_prompt)
         # if len(reg_embed)>1:
         #     REG_EMBEDDING.extend(torch.chunk(reg_embed, len(reg_embed), dim=0))
         # else:
@@ -225,16 +245,16 @@ class CustomDiffusion(LatentDiffusion):
         def cache_layer(model):
             for layer in model.children():
                 if type(layer) == CrossAttention:
-                    # layer.to_k0 = copy.deepcopy(layer.to_k)
+                    layer.to_k0 = copy.deepcopy(layer.to_k)
                     layer.to_v0 = copy.deepcopy(layer.to_v)
-                    # for param in layer.to_k0.parameters():
-                        # param.requires_grad = False
+                    for param in layer.to_k0.parameters():
+                        param.requires_grad = False
                     for param in layer.to_v0.parameters():
                         param.requires_grad = False
                 else:
                     cache_layer(layer)
         cache_layer(self.model.diffusion_model)
-    
+        
         def new_forward(self, x, context=None, reg_context=None,mask=None):
             h = self.heads
             crossattn = False
@@ -253,14 +273,20 @@ class CustomDiffusion(LatentDiffusion):
                 k = modifier*k + (1-modifier)*k.detach()
                 v = modifier*v + (1-modifier)*v.detach()
 
-                if reg_context is not None:
-                    # k_reg = self.to_k(reg_context.detach())
+                if reg_context is not None and self.training:
+                    k_reg = self.to_k(reg_context.detach())
                     v_reg = self.to_v(reg_context.detach())
-                    # k0_reg = self.to_k0(reg_context.detach())
+                    k0_reg = self.to_k0(reg_context.detach())
                     v0_reg = self.to_v0(reg_context.detach())
 
-                    # ATTN_REG_LOSS.append((k_reg - k0_reg).pow(2).mean() + (v_reg - v0_reg).pow(2).mean())
-                    ATTN_REG_LOSS.append((v_reg - v0_reg).pow(2).mean())
+                    ATTN_REG_K_LOSS.append((k_reg - k0_reg).pow(2).mean())
+                    ATTN_REG_V_LOSS.append((v_reg - v0_reg).pow(2).mean())
+                    # Ridge Regression
+                    ATTN_NORM_K_LOSS.append(torch.norm(self.to_k.weight - self.to_k0.weight, p=2))
+                    ATTN_NORM_V_LOSS.append(torch.norm(self.to_v.weight - self.to_v0.weight, p=2))
+                    # Lasso Regression
+                    # ATTN_NORM_LOSS.append(torch.abs(self.to_k.weight - self.to_k0.weight).mean())
+                    # ATTN_REG_LOSS.append((v_reg - v0_reg).pow(2).mean())
                 
             q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
             sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
@@ -291,10 +317,9 @@ class CustomDiffusion(LatentDiffusion):
             for x in self.model.diffusion_model.named_parameters():
                 if 'transformer_blocks' in x[0]:
                     if 'attn2.to_k' in x[0]:
-                        pass
-                        # params += [x[1]]
-                        # print(x[0])
-                        # self.to_k_list.append(x[0])
+                        params += [x[1]]
+                        print(x[0])
+                        self.to_k_list.append(x[0])
                     elif 'attn2.to_v' in x[0]:
                         params += [x[1]]
                         print(x[0])
@@ -374,9 +399,18 @@ class CustomDiffusion(LatentDiffusion):
         loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
         loss += (self.original_elbo_weight * loss_vlb)
         loss_dict.update({f'{prefix}/loss': loss})
-        # loss += sum(ATTN_REG_LOSS)
-        # loss_dict.update({f'{prefix}/ATTN_REG_LOSS': sum(ATTN_REG_LOSS)})
-        ATTN_REG_LOSS.clear()
+        loss += self.reg_k_scale * sum(ATTN_REG_K_LOSS)
+        loss += self.reg_v_scale * sum(ATTN_REG_V_LOSS)
+        loss_dict.update({f'{prefix}/ATTN_REG_K_LOSS': sum(ATTN_REG_K_LOSS)})
+        loss_dict.update({f'{prefix}/ATTN_REG_V_LOSS': sum(ATTN_REG_V_LOSS)})
+        loss += self.norm_k_scale * sum(ATTN_NORM_K_LOSS)
+        loss += self.norm_v_scale * sum(ATTN_NORM_V_LOSS)
+        loss_dict.update({f'{prefix}/ATTN_NORM_K_LOSS': sum(ATTN_NORM_K_LOSS)})
+        loss_dict.update({f'{prefix}/ATTN_NORM_V_LOSS': sum(ATTN_NORM_V_LOSS)})
+        ATTN_REG_K_LOSS.clear()
+        ATTN_REG_V_LOSS.clear()
+        ATTN_NORM_K_LOSS.clear()
+        ATTN_NORM_V_LOSS.clear()
         return loss, loss_dict
 
     @torch.no_grad()
@@ -419,9 +453,9 @@ class CustomDiffusion(LatentDiffusion):
         return loss
 
     @torch.no_grad()
-    def log_images(self, batch, N=8, n_row=4, sample=True, ddim_steps=200, ddim_eta=1., return_keys=None,
-                   quantize_denoised=True, inpaint=True, plot_denoise_rows=False, plot_progressive_rows=True,
-                   plot_diffusion_rows=True, **kwargs):
+    def log_images(self, batch, N=8, n_row=4, sample=True, ddim_steps=50, ddim_eta=1., return_keys=None,
+                   quantize_denoised=False, inpaint=False, plot_denoise_rows=False, plot_progressive_rows=False,
+                   plot_diffusion_rows=False, **kwargs):
 
         use_ddim = ddim_steps is not None
 

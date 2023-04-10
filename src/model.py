@@ -214,30 +214,30 @@ class CustomDiffusion(LatentDiffusion):
             # 2,768
             self.statics = update_dict(self.statics, 'c_reg_global', self.c_reg_start)
 
-        if self.global_step % 5 == 0:
-            print("checkpointing condition mapping vector in self.global_step:", self.global_step)
-            c_new, c_new_start = self.cond_stage_model.encode_text(NEW_PROMPTS)
-            c_sim = einsum("nc, mc -> nm", F.normalize(c_new_start,dim=-1), F.normalize(self.c_reg_start,dim=-1))
-            # find if self.statics is empty, create a list in self. statics and append c_sim ,else append c_sim to the list
-            self.statics = update_dict(self.statics, 'c_new_global', c_new_start.cpu().numpy())
-            self.statics = update_dict(self.statics, 'c_sim_global', c_sim.cpu().numpy())
-            print(c_sim)
-            # print(self.statics['c_sim'])
-            model_state = self.model.diffusion_model.state_dict()
-            for key in self.to_k_list:
-                if 'attn2.to_k' in key:
-                    k_mat = model_state[key].data.detach()
-                    # mat_kc = einsum("nc,mc-> mn", k_mat, c_new_start)
-                    # mat_kc_reg = einsum("nc,mc->mn",k_mat, self.c_reg_start, )
-                    self.statics = update_dict(self.statics, key, k_mat.cpu().numpy())
+        # if self.global_step % 5 == 0:
+        #     print("checkpointing condition mapping vector in self.global_step:", self.global_step)
+        #     c_new, c_new_start = self.cond_stage_model.encode_text(NEW_PROMPTS)
+        #     c_sim = einsum("nc, mc -> nm", F.normalize(c_new_start,dim=-1), F.normalize(self.c_reg_start,dim=-1))
+        #     # find if self.statics is empty, create a list in self. statics and append c_sim ,else append c_sim to the list
+        #     self.statics = update_dict(self.statics, 'c_new_global', c_new_start.cpu().numpy())
+        #     self.statics = update_dict(self.statics, 'c_sim_global', c_sim.cpu().numpy())
+        #     print(c_sim)
+        #     # print(self.statics['c_sim'])
+        #     model_state = self.model.diffusion_model.state_dict()
+        #     for key in self.to_k_list:
+        #         if 'attn2.to_k' in key:
+        #             k_mat = model_state[key].data.detach()
+        #             # mat_kc = einsum("nc,mc-> mn", k_mat, c_new_start)
+        #             # mat_kc_reg = einsum("nc,mc->mn",k_mat, self.c_reg_start, )
+        #             self.statics = update_dict(self.statics, key, k_mat.cpu().numpy())
 
-            for key in self.to_v_list:
-                if 'attn2.to_v' in key:
-                    v_mat = model_state[key].data.detach()
-                    # mat_vc = einsum("nc,mc-> mn ",v_mat, c_new_start)
-                    # mat_vc_reg = einsum("nc,mc-> mn ",v_mat, self.c_reg_start)
-                    self.statics = update_dict(self.statics, key, v_mat.cpu().numpy())
-                    # torch.save(self.statics, os.path.join(self.logger.save_dir,'statics.pt'))
+        #     for key in self.to_v_list:
+        #         if 'attn2.to_v' in key:
+        #             v_mat = model_state[key].data.detach()
+        #             # mat_vc = einsum("nc,mc-> mn ",v_mat, c_new_start)
+        #             # mat_vc_reg = einsum("nc,mc-> mn ",v_mat, self.c_reg_start)
+        #             self.statics = update_dict(self.statics, key, v_mat.cpu().numpy())
+        #             # torch.save(self.statics, os.path.join(self.logger.save_dir,'statics.pt'))
 
     @rank_zero_only
     def on_train_end(self) -> None:

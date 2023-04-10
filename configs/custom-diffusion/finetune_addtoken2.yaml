@@ -151,7 +151,7 @@ model:
           target: torch.nn.Identity
 
     cond_stage_config:
-      target: src.custom_modules.FrozenCLIPEmbedderWrapper
+      target: src2.custom_modules.FrozenCLIPEmbedderWrapper
       params:
         modifier_token: <new1>
 
@@ -176,9 +176,9 @@ lightning:
     image_logger:
       target: train.ImageLogger
       params:
-        batch_frequency: 1000
+        batch_frequency: 100
         max_images: 8
         increase_log_steps: False
 
   trainer:
-    max_steps: 150
+    max_steps: 250

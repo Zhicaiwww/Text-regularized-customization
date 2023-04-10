@@ -4,6 +4,10 @@ bash scripts/finetune_real.sh "dog" data/dog data/retrieve_dog_200  dog_realReg 
 
 CUDA_VISIBLE_DEVICES=3 python sample.py --prompt 'photo of a <new1> dog' --delta_ckpt logs/2023-03-26T12-52-38_dog-sdv4/checkpoints/epoch=000005.ckpt --ckpt Stable-diffusion/sd-v1-4-full-ema.ckpt --n_samples 8 --n_iter 2
 
-CUDA_VISIBLE_DEVICES=2 python sample.py --prompt 'photo of a <new1> dog' --delta_ckpt logs/2023-03-27T05-43-18_dog/checkpoints/epoch=000014.ckpt --ckpt Stable-diffusion/sd-v1-4-full-ema.ckpt --n_samples 8 --n_iter 2
+CUDA_VISIBLE_DEVICES=5 python sample.py --prompt 'photo of a golden retriever' --ckpt Stable-diffusion/sd-v1-4-full-ema.ckpt --n_samples 8 --n_iter 1 --n_rows 8
 
-CUDA_VISIBLE_DEVICES=3 python sample.py --prompt 'photo of a <new1> dog under the eiffel tower' --delta_ckpt logs/2023-03-27T05-43-18_dog/checkpoints/epoch=000009.ckpt --ckpt Stable-diffusion/sd-v1-4-full-ema.ckpt --n_samples 8 --n_iter 2
+logs/2023-04-07T15-27-22_dogreg_0.1_scale0_a_dog_ridge_KV/checkpoints/delta_epoch=last.ckpt
+logs/logs_toTest/2023-04-06T16-54-16_dogreg_0_scale0_a_dog_lasso/checkpoints/delta_epoch=last.ckpt
+logs/logs_liox/2023-04-05T05-00-30_dog-sdv4/checkpoints/delta_epoch=last.ckpt
+
+CUDA_VISIBLE_DEVICES=7 python sample.py --prompt '(<new1>:1.5) tortoise plushy working on the laptop' --delta_ckpt logs/2023-04-08T03-32-12_tortoise_plushyreg_0.1_scale0_a_tortoise_plushy_ridge_onlyK_noblip/checkpoints/delta_epoch=last.ckpt --ckpt Stable-diffusion/sd-v1-4-full-ema.ckpt --n_rows 8 --n_samples 8 --n_iter 1 --scale 6

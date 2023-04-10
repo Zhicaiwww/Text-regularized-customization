@@ -109,6 +109,7 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import Callback, LearningRateMonitor
 from pytorch_lightning.utilities.distributed import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
@@ -296,14 +297,21 @@ def get_parser(**parser_kwargs):
         default=0,
         help="repeat the target dataset by how many times. Used when training without regularization",
     ) 
+
     parser.add_argument(
         "--batch_size",
         type=int,
         default=None,
         help="overwrite batch size",
     )      
+    parser.add_argument("--reg_k_scale", type=float, default=0,) 
+    parser.add_argument("--reg_v_scale", type=float, default=0,) 
+    parser.add_argument('--norm_k_scale', type=float, default=0.1)
+    parser.add_argument('--norm_v_scale', type=float, default=0.1)
+    parser.add_argument('--reg_prompt', nargs='+')
+    parser.add_argument('--new_prompt', nargs='+')
+    parser.add_argument('--reg_prompt_file', type=str, default=None)
     return parser
-
 
 def nondefault_trainer_args(opt):
     parser = argparse.ArgumentParser()
@@ -618,6 +626,18 @@ class CUDACallback(Callback):
         except AttributeError:
             pass
 
+class MyModelCheckpoint(ModelCheckpoint):
+    def __init__(self, layers_to_save, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.layers_to_save = layers_to_save
+
+    def on_validation_end(self, trainer, pl_module):
+        # Get the state dict of the model
+        state_dict = pl_module.state_dict()
+        # Filter the state dict to keep only the weights of the specified layers
+        state_dict = {k: v for k, v in state_dict.items() if any(layer in k for layer in self.layers_to_save)}
+        # Update the state dict of the checkpoint
+        self._save_dict(state_dict)
 
 if __name__ == "__main__":
     # custom parser to specify config files, train, test and debug mode,
@@ -759,6 +779,26 @@ if __name__ == "__main__":
         if opt.freeze_model is not None:
             config.model.params.freeze_model = opt.freeze_model
 
+        if opt.reg_k_scale is not None:
+            config.model.params.reg_k_scale = opt.reg_k_scale
+        if opt.reg_v_scale is not None:
+            config.model.params.reg_v_scale = opt.reg_v_scale
+        if opt.norm_k_scale is not None:
+            config.model.params.norm_k_scale = opt.norm_k_scale 
+        if opt.norm_v_scale is not None:
+            config.model.params.norm_v_scale = opt.norm_v_scale 
+        if opt.reg_prompt is not None:
+            config.model.params.reg_prompt = opt.reg_prompt
+        else:
+            assert opt.reg_prompt_file is not None
+            with open(opt.reg_prompt_file, "r") as f:
+                lines = f.readlines()
+                lines = [line.strip() for line in lines]
+            config.model.params.reg_prompt = lines
+
+        if opt.new_prompt is not None:
+            config.model.params.new_prompt = opt.new_prompt
+
         model = instantiate_from_config(config.model)
         if opt.resume_from_checkpoint_custom:
             st = torch.load(opt.resume_from_checkpoint_custom, map_location='cpu')["state_dict"]
@@ -819,7 +859,7 @@ if __name__ == "__main__":
             "target": "pytorch_lightning.callbacks.ModelCheckpoint",
             "params": {
                 "dirpath": ckptdir,
-                "filename": "{epoch:06}",
+                "filename": "{epoch:06}-{step:09}",
                 "verbose": True,
                 "save_last": True,
                 "every_n_train_steps": 50,

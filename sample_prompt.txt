@@ -1,1 +1,8 @@
-photo of a bully dog
+Photo of <new1> dog
+<new1> dog swimming in a pool
+<new1> dog at a beach with a view of the seashore
+<new1> dog in times square
+<new1> dog wearing sunglasses
+<new1> dog in a construction outfit
+<new1> dog playing with a ball
+<new1> dog wearing headphones 

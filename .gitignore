@@ -2,3 +2,8 @@ logs/*
 data/*
 real_reg/*
 outputs/*
+*.out
+*.png
+*.jpg
+*.pth
+tools/*

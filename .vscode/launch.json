@@ -22,7 +22,7 @@
             "args": [
                 "--base", "configs/custom-diffusion/finetune_addtoken2.yaml",
                 "-t",
-                "--gpus", "3,7",
+                "--gpus", "2,4",
                 "--resume-from-checkpoint-custom","Stable-diffusion/sd-v1-4-full-ema.ckpt",
                 "--caption","<new1> dog",
                 "--datapath", "data/dog",
