@@ -8,6 +8,7 @@ outputs/*
 *.pth
 *.pt
 tools/*
+*.pyc
 __pycahce__/*
 .vscode/*
 # Jupyter Notebook

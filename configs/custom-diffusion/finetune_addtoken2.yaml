@@ -181,4 +181,4 @@ lightning:
         increase_log_steps: False
 
   trainer:
-    max_steps: 250
+    max_steps: 300
