@@ -308,7 +308,8 @@ def get_parser(**parser_kwargs):
     parser.add_argument("--reg_v_scale", type=float, default=0,) 
     parser.add_argument('--norm_k_scale', type=float, default=0.1)
     parser.add_argument('--norm_v_scale', type=float, default=0.1)
-    parser.add_argument('--reg_prompt', nargs='+')
+    parser.add_argument('--concept_classes', nargs='*')
+    parser.add_argument('--reg_prompt', nargs='*')
     parser.add_argument('--new_prompt', nargs='+')
     parser.add_argument('--reg_prompt_file', type=str, default=None)
     return parser
@@ -771,6 +772,8 @@ if __name__ == "__main__":
             config.data.params.batch_size = opt.batch_size
         if opt.modifier_token is not None:
             config.model.params.cond_stage_config.params.modifier_token = opt.modifier_token 
+        if opt.concept_classes is not None:
+            config.model.params.cond_stage_config.params.concept_classes = opt.concept_classes
         if opt.repeat > 0:
             config.data.params.train.params.repeat = opt.repeat
         
@@ -789,6 +792,7 @@ if __name__ == "__main__":
             config.model.params.norm_v_scale = opt.norm_v_scale 
         if opt.reg_prompt is not None:
             config.model.params.reg_prompt = opt.reg_prompt
+
         else:
             assert opt.reg_prompt_file is not None
             with open(opt.reg_prompt_file, "r") as f:
@@ -862,7 +866,7 @@ if __name__ == "__main__":
                 "filename": "{epoch:06}-{step:09}",
                 "verbose": True,
                 "save_last": True,
-                "every_n_train_steps": 50,
+                "every_n_train_steps": 100,
             }
         }
         if hasattr(model, "monitor"):

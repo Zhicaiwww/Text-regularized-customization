@@ -237,7 +237,8 @@ class CustomDiffusion(LatentDiffusion):
 
     def on_train_start(self) -> None:
         import copy
-        REG_EMBEDDING , _= self.cond_stage_model.encode_text(self.reg_prompt)
+        reg_ebed, _= self.cond_stage_model.encode_text(self.reg_prompt)
+        REG_EMBEDDING = reg_ebed[:,1:5,:]
         # if len(reg_embed)>1:
         #     REG_EMBEDDING.extend(torch.chunk(reg_embed, len(reg_embed), dim=0))
         # else:
@@ -338,6 +339,8 @@ class CustomDiffusion(LatentDiffusion):
             print(f"{self.__class__.__name__}: Also optimizing conditioner params!")
             if self.add_token:
                 params = params + list(self.cond_stage_model.transformer.text_model.embeddings.token_embedding.parameters())
+                if self.cond_stage_model.class_bias:
+                    params += list(self.cond_stage_model.class_manager.parameters())
             else:
                 params = params + list(self.cond_stage_model.parameters())
 

@@ -307,7 +307,7 @@ def main():
     seed_everything(opt.seed)
     config = OmegaConf.load(f"{opt.config}")
     if opt.modifier_token is not None:
-        config.model.params.cond_stage_config.target = 'src.custom_modules.FrozenCLIPEmbedderWrapper'
+        config.model.params.cond_stage_config.target = 'src2.custom_modules.FrozenCLIPEmbedderWrapper'
         config.model.params.cond_stage_config.params = {}
         config.model.params.cond_stage_config.params.modifier_token = opt.modifier_token
     model = load_model_from_config(config, f"{opt.ckpt}")

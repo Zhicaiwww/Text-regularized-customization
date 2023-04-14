@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import transformers
 from transformers import CLIPTokenizer, CLIPTextModel
+import sys
+sys.path.append('/home/zhicai/poseVideo/custom-diffusion/')
 from src2.parse_prompts import parse_prompt_attention
 
 class AbstractEncoder(nn.Module):
@@ -11,6 +13,14 @@ class AbstractEncoder(nn.Module):
 
     def encode(self, *args, **kwargs):
         raise NotImplementedError
+    
+class ClassBias(nn.Module):
+    def __init__(self,modifier_id, class_ids, shape):
+        super().__init__()
+        self.modifier_id = modifier_id
+        self.class_ids = class_ids
+        self.class_bias = torch.nn.Parameter(torch.zeros(shape), requires_grad=True)
+        self.class_len = len(class_ids)
 
 class PromptChunk:
     """
@@ -27,7 +37,7 @@ class PromptChunk:
         
 class FrozenCLIPEmbedderWrapper(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from Hugging Face)"""
-    def __init__(self, modifier_token, concept = None, concept_bias =False,version="openai/clip-vit-large-patch14", device="cuda", max_length=77,num_vectors_per_token=1,enable_emphasis=True):
+    def __init__(self, modifier_token, concept_classes = None, version="openai/clip-vit-large-patch14", device="cuda", max_length=77,num_vectors_per_token=1,enable_emphasis=True,interpolated =False):
         super().__init__()
         self.tokenizer = CLIPTokenizer.from_pretrained(version)
         self.transformer = CLIPTextModel.from_pretrained(version)
@@ -40,11 +50,15 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
         self.id_end = self.tokenizer.eos_token_id
         self.id_pad = self.id_end
         self.enable_emphasis = enable_emphasis
-
+        self.concept_classes = concept_classes #["'<new1> dog'"]
+        self.class_bias = True if concept_classes is not None else False
+        self.interpolated = interpolated    
         if '+' in self.modifier_token:
             self.modifier_token = self.modifier_token.split('+')
         else:
             self.modifier_token = [self.modifier_token]
+        # if class_bias:
+            
 
         self.add_token()
         self.freeze()
@@ -59,11 +73,24 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
 
         self.transformer.resize_token_embeddings(len(self.tokenizer))
         token_embeds = self.transformer.get_input_embeddings().weight.data
+        
+        self.pad_embedding = token_embeds[self.id_pad]
         token_embeds[self.modifier_token_id[-1]] = torch.nn.Parameter(token_embeds[42170], requires_grad=True)
         if len(self.modifier_token) == 2:
             token_embeds[self.modifier_token_id[-2]] = torch.nn.Parameter(token_embeds[47629], requires_grad=True)
         if len(self.modifier_token) == 3:
             token_embeds[self.modifier_token_id[-3]] = torch.nn.Parameter(token_embeds[43514], requires_grad=True)
+        
+        if self.class_bias:
+            for each_concept_class in self.concept_classes:
+                class_modifier, class_name = each_concept_class.split(' ',1)
+                print(class_name)
+                assert class_modifier in self.modifier_token
+                class_modifier_id = self.tokenize(class_modifier)[0]
+                class_name_id = self.tokenize(class_name) 
+                class_ids = torch.asarray(class_name_id)
+                self.class_manager = ClassBias(class_modifier_id, class_ids, token_embeds[class_name_id].size())
+                # self.modifier_concept_class_dict[class_modifier_id] = class_manager
 
     def custom_forward(self, hidden_states, tokens, multipliers):
         r"""
@@ -71,6 +98,15 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
         """
         input_shape = hidden_states.size()
         bsz, seq_len = input_shape[:2]
+        if self.interpolated:
+            pad_hidden_state = self.pad_embedding.expand(bsz, seq_len, -1).detach().to(hidden_states.device)
+            # calculate iterplation between original hidden state and pad hidden state using multipliers, iterplated =  original * multipliers + pad * (1-multipliers)
+            hidden_states = hidden_states * multipliers.unsqueeze(-1) + pad_hidden_state * (1 - multipliers.unsqueeze(-1))
+        else:
+            original_mean = hidden_states.mean(dim=[1,2],keepdim=True)
+            hidden_states = hidden_states * multipliers.unsqueeze(-1)
+            new_mean = hidden_states.mean(dim=[1,2],keepdim=True)
+            hidden_states = hidden_states * (original_mean / new_mean)
         if version.parse(transformers.__version__) >= version.parse('4.21'):
             causal_attention_mask = self.transformer.text_model._build_causal_attention_mask(bsz, seq_len, hidden_states.dtype).to(
                 hidden_states.device
@@ -87,10 +123,10 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
 
         last_hidden_state = encoder_outputs[0]
         last_hidden_state = self.transformer.text_model.final_layer_norm(last_hidden_state)
-        original_mean = last_hidden_state.mean(dim=[1,2],keepdim=True)
-        last_hidden_state = last_hidden_state * multipliers.unsqueeze(-1)
-        new_mean = last_hidden_state.mean(dim=[1,2],keepdim=True)
-        last_hidden_state = last_hidden_state * (original_mean / new_mean)
+        # original_mean = last_hidden_state.mean(dim=[1,2],keepdim=True)
+        # last_hidden_state = last_hidden_state * multipliers.unsqueeze(-1)
+        # new_mean = last_hidden_state.mean(dim=[1,2],keepdim=True)
+        # last_hidden_state = last_hidden_state * (original_mean / new_mean)
         return last_hidden_state
 
     def freeze(self):
@@ -137,6 +173,18 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
         hidden_states = self.transformer.text_model.embeddings(input_ids=tokens)
         hidden_states = (1-indices)*hidden_states.detach() + indices*hidden_states
 
+        if self.class_bias:
+            # for modifier_id, classmanager in self.modifier_concept_class_dict.items():
+                modifier_id = self.class_manager.modifier_id
+                idxs = torch.where(tokens == modifier_id)
+                if len(idxs[0]) == 0:
+                    pass
+                    # break
+                else:
+                    for i in range(len(idxs[0])):
+                        b,t = idxs[0][i], idxs[1][i]
+                        if t + self.class_manager.class_len + 1 < 77 and tokens[b,t+1:t+1+self.class_manager.class_len].equal(self.class_manager.class_ids.to(self.device)):
+                            hidden_states[b,t+1:t+1+self.class_manager.class_len] = hidden_states[b,t+1:t+1+self.class_manager.class_len] + self.class_manager.class_bias
         return hidden_states, tokens , multipliers
 
     def tokenize(self,texts):
@@ -190,6 +238,9 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
 
         hidden_states, tokens, multipliers = self(texts)
         z = self.custom_forward(hidden_states, tokens, multipliers)
+
+        # z[torch.arange(z.shape[0]), 0] = 0
+        # z[torch.arange(z.shape[0]), [torch.where(tokens[i] == 49407,)[0][0] for i in range(len(tokens))]] = 0
         return z
 
     def encode_text(self, text):
@@ -201,5 +252,6 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
 
 
 if __name__ == "__main__":
-    model = FrozenCLIPEmbedderWrapper(modifier_token='<new1>',device='cpu')
+    model = FrozenCLIPEmbedderWrapper(modifier_token='<new1>',concept_classes = ['<new1> cat dog'], device='cpu')
+    model.encode(["hello (world:2) <new1> dog, <new1> cat dog"])
     model.encode(["hello (world:2)"])

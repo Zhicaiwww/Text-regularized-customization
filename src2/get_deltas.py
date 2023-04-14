@@ -19,7 +19,7 @@ def main(path, newtoken=0):
             st = torch.load(files,map_location='cpu')["state_dict"]
             if len(layers) == 0:
                 for key in list(st.keys()):
-                    if ('attn2.to_k' in key or 'attn2.to_v' in key) and not ('attn.to_v0' in key or 'attn.to_k0' in key):
+                    if ('attn2.to_k' in key or 'attn2.to_v' in key or 'class_bias' in key) and not ('attn.to_v0' in key or 'attn.to_k0' in key):
                         layers.append(key)
                 print(layers)
             st_delta = {'state_dict': {}}
