@@ -15,12 +15,17 @@ class AbstractEncoder(nn.Module):
         raise NotImplementedError
     
 class ClassBias(nn.Module):
-    def __init__(self,modifier_id, class_ids, shape):
+    def __init__(self,modifier_id, class_ids, shape,bias_strength):
         super().__init__()
         self.modifier_id = modifier_id
         self.class_ids = class_ids
         self.class_bias = torch.nn.Parameter(torch.zeros(shape), requires_grad=True)
         self.class_len = len(class_ids)
+        self.bias_strength = bias_strength
+    def forward(self,tokens,hidden_states,b,t):
+        if t + self.class_len + 1 < 77 and tokens[b,t+1:t+1+self.class_len].equal(self.class_ids.to(tokens.device)):
+            hidden_states[b,t+1:t+1+self.class_len] = hidden_states[b,t+1:t+1+self.class_len] + self.class_bias * self.bias_strength
+        return hidden_states
 
 class PromptChunk:
     """
@@ -37,7 +42,7 @@ class PromptChunk:
         
 class FrozenCLIPEmbedderWrapper(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from Hugging Face)"""
-    def __init__(self, modifier_token, concept_classes = None, version="openai/clip-vit-large-patch14", device="cuda", max_length=77,num_vectors_per_token=1,enable_emphasis=True,interpolated =False):
+    def __init__(self, modifier_token, concept_classes = None,bias_strengths=None, version="openai/clip-vit-large-patch14", device="cpu", max_length=77,num_vectors_per_token=1,enable_emphasis=True,interpolated =False):
         super().__init__()
         self.tokenizer = CLIPTokenizer.from_pretrained(version)
         self.transformer = CLIPTextModel.from_pretrained(version)
@@ -52,6 +57,7 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
         self.enable_emphasis = enable_emphasis
         self.concept_classes = concept_classes #["'<new1> dog'"]
         self.class_bias = True if concept_classes is not None else False
+        self.bias_strengths = bias_strengths
         self.interpolated = interpolated    
         if '+' in self.modifier_token:
             self.modifier_token = self.modifier_token.split('+')
@@ -82,14 +88,18 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
             token_embeds[self.modifier_token_id[-3]] = torch.nn.Parameter(token_embeds[43514], requires_grad=True)
         
         if self.class_bias:
-            for each_concept_class in self.concept_classes:
+            self.modifier_concept_class_dict = {}
+            assert self.bias_strengths is not None and len(self.bias_strengths) == len(self.concept_classes)
+            for i,each_concept_class in enumerate(self.concept_classes):
                 class_modifier, class_name = each_concept_class.split(' ',1)
                 print(class_name)
-                assert class_modifier in self.modifier_token
+                assert class_modifier in self.modifier_token 
                 class_modifier_id = self.tokenize(class_modifier)[0]
                 class_name_id = self.tokenize(class_name) 
                 class_ids = torch.asarray(class_name_id)
-                self.class_manager = ClassBias(class_modifier_id, class_ids, token_embeds[class_name_id].size())
+                self.__setattr__(f'class_manager_{i}', ClassBias(class_modifier_id, class_ids, token_embeds[class_name_id].size(),self.bias_strengths[i]))
+                self.modifier_concept_class_dict[class_modifier_id] = self.__getattr__(f'class_manager_{i}')
+                # self.class_manager = ClassBias(class_modifier_id, class_ids, token_embeds[class_name_id].size())
                 # self.modifier_concept_class_dict[class_modifier_id] = class_manager
 
     def custom_forward(self, hidden_states, tokens, multipliers):
@@ -174,17 +184,16 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
         hidden_states = (1-indices)*hidden_states.detach() + indices*hidden_states
 
         if self.class_bias:
-            # for modifier_id, classmanager in self.modifier_concept_class_dict.items():
-                modifier_id = self.class_manager.modifier_id
+            for modifier_id, class_manager in self.modifier_concept_class_dict.items():
+                modifier_id = class_manager.modifier_id
                 idxs = torch.where(tokens == modifier_id)
                 if len(idxs[0]) == 0:
                     pass
                     # break
                 else:
                     for i in range(len(idxs[0])):
-                        b,t = idxs[0][i], idxs[1][i]
-                        if t + self.class_manager.class_len + 1 < 77 and tokens[b,t+1:t+1+self.class_manager.class_len].equal(self.class_manager.class_ids.to(self.device)):
-                            hidden_states[b,t+1:t+1+self.class_manager.class_len] = hidden_states[b,t+1:t+1+self.class_manager.class_len] + self.class_manager.class_bias
+                        class_manager(tokens, hidden_states, idxs[0][i], idxs[1][i])
+
         return hidden_states, tokens , multipliers
 
     def tokenize(self,texts):
@@ -249,9 +258,8 @@ class FrozenCLIPEmbedderWrapper(AbstractEncoder):
         stc_z = z[torch.arange(z.shape[0]), [torch.where(tokens[i] == 49407,)[0][0] for i in range(len(tokens))]]
         return z, stc_z
         
-
-
 if __name__ == "__main__":
-    model = FrozenCLIPEmbedderWrapper(modifier_token='<new1>',concept_classes = ['<new1> cat dog'], device='cpu')
-    model.encode(["hello (world:2) <new1> dog, <new1> cat dog"])
+    model = FrozenCLIPEmbedderWrapper(modifier_token='<new1>+<new2>',concept_classes = ['<new1> cat dog','<new2> dog'], device='cpu')
+    model.encode(["hello (world:2) <new2> dog, <new1> cat dog"])
+    torch.save(model.state_dict(), 'model.pt')
     model.encode(["hello (world:2)"])

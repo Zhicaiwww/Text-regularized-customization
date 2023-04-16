@@ -10,6 +10,7 @@ outputs/*
 tools/*
 *.pyc
 __pycahce__/*
+optimized_logs/*
 .vscode/*
 # Jupyter Notebook
 .ipynb_checkpoints

@@ -280,11 +280,11 @@ class CustomDiffusion(LatentDiffusion):
                     k0_reg = self.to_k0(reg_context.detach())
                     v0_reg = self.to_v0(reg_context.detach())
 
-                    ATTN_REG_K_LOSS.append((k_reg - k0_reg).pow(2).mean())
-                    ATTN_REG_V_LOSS.append((v_reg - v0_reg).pow(2).mean())
+                    ATTN_REG_K_LOSS.append((k_reg - k0_reg).pow(2).sum(dim=1).mean())
+                    ATTN_REG_V_LOSS.append((v_reg - v0_reg).pow(2).sum(dim=1).mean())
                     # Ridge Regression
-                    ATTN_NORM_K_LOSS.append(torch.norm(self.to_k.weight - self.to_k0.weight, p=2))
-                    ATTN_NORM_V_LOSS.append(torch.norm(self.to_v.weight - self.to_v0.weight, p=2))
+                    ATTN_NORM_K_LOSS.append(torch.norm(self.to_k.weight - self.to_k0.weight, p=2,dim=1).mean())
+                    ATTN_NORM_V_LOSS.append(torch.norm(self.to_v.weight - self.to_v0.weight, p=2,dim=1).mean())
                     # Lasso Regression
                     # ATTN_NORM_LOSS.append(torch.abs(self.to_k.weight - self.to_k0.weight).mean())
                     # ATTN_REG_LOSS.append((v_reg - v0_reg).pow(2).mean())

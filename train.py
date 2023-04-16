@@ -308,7 +308,8 @@ def get_parser(**parser_kwargs):
     parser.add_argument("--reg_v_scale", type=float, default=0,) 
     parser.add_argument('--norm_k_scale', type=float, default=0.1)
     parser.add_argument('--norm_v_scale', type=float, default=0.1)
-    parser.add_argument('--concept_classes', nargs='*')
+    parser.add_argument('--concept_classes', nargs='*',type=str)
+    parser.add_argument('--bias_strengths', nargs='*',type=float)
     parser.add_argument('--reg_prompt', nargs='*')
     parser.add_argument('--new_prompt', nargs='+')
     parser.add_argument('--reg_prompt_file', type=str, default=None)
@@ -774,6 +775,7 @@ if __name__ == "__main__":
             config.model.params.cond_stage_config.params.modifier_token = opt.modifier_token 
         if opt.concept_classes is not None:
             config.model.params.cond_stage_config.params.concept_classes = opt.concept_classes
+            config.model.params.cond_stage_config.params.bias_strengths = opt.bias_strengths if opt.bias_strengths is not None else [1.0]*len(opt.concept_classes)
         if opt.repeat > 0:
             config.data.params.train.params.repeat = opt.repeat
         
