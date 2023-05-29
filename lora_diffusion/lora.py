@@ -51,6 +51,9 @@ class LoraInjectedLinear(nn.Module):
         nn.init.zeros_(self.lora_up.weight)
 
     def forward(self, input):
+        if hasattr(self, 'input_detach'):
+            del self.input_detach
+        self.input_detach = input.detach()
         return (
             self.linear(input)
             + self.dropout(self.lora_up(self.selector(self.lora_down(input))))
@@ -59,6 +62,15 @@ class LoraInjectedLinear(nn.Module):
 
     def realize_as_lora(self):
         return self.lora_up.weight.data * self.scale, self.lora_down.weight.data
+   
+    def get_reg_loss(self,reg_vector = None):
+        if reg_vector is None:
+            # L2 norm of the weight matrix
+            lora_project_vector = self.lora_up(self.lora_down(self.input_detach))
+            return torch.norm(lora_project_vector, dim =[1,2],p = 2)
+        else:
+            lora_project_vector = self.lora_up(self.lora_down(reg_vector))
+            return torch.norm(lora_project_vector, dim =[1,2], p = 2)
 
     def set_selector_from_diag(self, diag: torch.Tensor):
         # diag is a 1D tensor of size (r,)
@@ -158,6 +170,8 @@ class LoraInjectedConv2d(nn.Module):
 
 UNET_DEFAULT_TARGET_REPLACE = {"CrossAttention", "Attention", "GEGLU"}
 
+UNET_CROSSATTN_TARGET_REPLACE = {"BasicTransformerBlock"}
+
 UNET_EXTENDED_TARGET_REPLACE = {"ResnetBlock2D", "CrossAttention", "Attention", "GEGLU"}
 
 TEXT_ENCODER_DEFAULT_TARGET_REPLACE = {"CLIPAttention"}
@@ -232,6 +246,68 @@ def _find_modules_v2(
                 yield parent, name, module
 
 
+def _find_modules_v3(
+    model,
+    ancestor_class: Optional[Set[str]] = None,
+    search_class: List[Type[nn.Module]] = [nn.Linear],
+    exclude_children_of: Optional[List[Type[nn.Module]]] = [
+        LoraInjectedLinear,
+        LoraInjectedConv2d,
+    ],
+    filter_crossattn_str = 'full',
+):
+    """
+    Find all modules of a certain class (or union of classes) that are direct or
+    indirect descendants of other modules of a certain class (or union of classes).
+
+    Returns all matching modules, along with the parent of those moduless and the
+    names they are referenced by.
+    """
+
+    # Get the targets we should replace all linears under
+    if ancestor_class is not None:
+        ancestors = (
+            module
+            for module in model.modules()
+            if module.__class__.__name__ in ancestor_class
+        )
+    else:
+        # this, incase you want to naively iterate over all modules.
+        ancestors = [module for module in model.modules()]
+
+    # For each target find every linear_class module that isn't a child of a LoraInjectedLinear
+    for ancestor in ancestors:
+        for fullname, module in ancestor.named_modules():
+            if any([isinstance(module, _class) for _class in search_class]):
+                # Find the direct parent if this is a descendant, not a child, of target
+                if filter_crossattn_str == 'cross+self' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
+                    if 'to_k' in fullname or 'to_v' in fullname:
+                        pass
+                    else:
+                        continue
+                if filter_crossattn_str == 'cross' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
+                    if 'attn2.to_k' in fullname or 'attn2.to_v' in fullname:
+                        pass
+                    else:
+                        continue
+                if filter_crossattn_str == 'self' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
+                    if 'attn1.to_k' in fullname or 'attn1.to_v' in fullname:
+                        pass
+                    else:
+                        continue
+                *path, name = fullname.split(".")
+                parent = ancestor
+                while path:
+                    parent = parent.get_submodule(path.pop(0))
+                # Skip this linear if it's a child of a LoraInjectedLinear
+                if exclude_children_of and any(
+                    [isinstance(parent, _class) for _class in exclude_children_of]
+                ):
+                    continue
+                # Otherwise, yield it
+                yield parent, name, module
+
+
 def _find_modules_old(
     model,
     ancestor_class: Set[str] = DEFAULT_TARGET_REPLACE,
@@ -249,7 +325,7 @@ def _find_modules_old(
     return ret
 
 
-_find_modules = _find_modules_v2
+_find_modules = _find_modules_v3
 
 
 def inject_trainable_lora(
@@ -260,6 +336,7 @@ def inject_trainable_lora(
     verbose: bool = False,
     dropout_p: float = 0.0,
     scale: float = 1.0,
+    **kwargs,
 ):
     """
     inject lora into model, and returns lora parameter groups.
@@ -272,7 +349,7 @@ def inject_trainable_lora(
         loras = torch.load(loras)
 
     for _module, name, _child_module in _find_modules(
-        model, target_replace_module, search_class=[nn.Linear]
+        model, target_replace_module, search_class=[nn.Linear], **kwargs
     ):
         weight = _child_module.weight
         bias = _child_module.bias
@@ -379,6 +456,28 @@ def inject_trainable_lora_extended(
 
     return require_grad_params, names
 
+
+def filter_unet_to_norm_weights(unet, target_replace_module=UNET_CROSSATTN_TARGET_REPLACE):
+    """
+    filter out lora weights from unet
+    returns :
+        {"cross_project_loras": lora_params_name,
+        "other_loras": lora_params_name,
+        }
+    """
+
+    _child_modules = [_child_module for _,_,_child_module in 
+                      _find_modules(unet, target_replace_module, search_class=[LoraInjectedLinear, LoraInjectedConv2d])]
+    _child_cross_project_modules = [_child_module for _,_,_child_module in
+                                    _find_modules(unet, target_replace_module, search_class=[LoraInjectedLinear],filter_crossattn_str='cross')]
+
+    _child_other_lora_modules = list(set(_child_modules) - set(_child_cross_project_modules)) 
+
+    filter_result = {
+        "cross_project_loras": _child_cross_project_modules,
+        "other_loras": _child_other_lora_modules,
+    }
+    return filter_result
 
 def extract_lora_ups_down(model, target_replace_module=DEFAULT_TARGET_REPLACE):
 
@@ -674,9 +773,10 @@ def monkeypatch_or_replace_lora(
     loras,
     target_replace_module=DEFAULT_TARGET_REPLACE,
     r: Union[int, List[int]] = 4,
+    **kwargs,
 ):
     for _module, name, _child_module in _find_modules(
-        model, target_replace_module, search_class=[nn.Linear, LoraInjectedLinear]
+        model, target_replace_module, search_class=[nn.Linear, LoraInjectedLinear],**kwargs
     ):
         _source = (
             _child_module.linear
@@ -718,13 +818,13 @@ def monkeypatch_or_replace_lora_extended(
     loras,
     target_replace_module=DEFAULT_TARGET_REPLACE,
     r: Union[int, List[int]] = 4,
+    **kwargs,
 ):
     for _module, name, _child_module in _find_modules(
         model,
         target_replace_module,
-        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d],
+        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d],**kwargs,
     ):
-
         if (_child_module.__class__ == nn.Linear) or (
             _child_module.__class__ == LoraInjectedLinear
         ):
@@ -796,7 +896,7 @@ def monkeypatch_or_replace_lora_extended(
         _module._modules[name].to(weight.device)
 
 
-def monkeypatch_or_replace_safeloras(models, safeloras):
+def monkeypatch_or_replace_safeloras(models, safeloras,**kwargs):
     loras = parse_safeloras(safeloras)
 
     for name, (lora, ranks, target) in loras.items():
@@ -806,7 +906,7 @@ def monkeypatch_or_replace_safeloras(models, safeloras):
             print(f"No model provided for {name}, contained in Lora")
             continue
 
-        monkeypatch_or_replace_lora_extended(model, lora, target, ranks)
+        monkeypatch_or_replace_lora_extended(model, lora, target, ranks,**kwargs)
 
 
 def monkeypatch_remove_lora(model):
@@ -966,6 +1066,7 @@ def patch_pipe(
     idempotent_token=True,
     unet_target_replace_module=DEFAULT_TARGET_REPLACE,
     text_target_replace_module=TEXT_ENCODER_DEFAULT_TARGET_REPLACE,
+    **kwargs,
 ):
     if maybe_unet_path.endswith(".pt"):
         # torch format
@@ -1009,7 +1110,8 @@ def patch_pipe(
 
     elif maybe_unet_path.endswith(".safetensors"):
         safeloras = safe_open(maybe_unet_path, framework="pt", device="cpu")
-        monkeypatch_or_replace_safeloras(pipe, safeloras)
+
+        monkeypatch_or_replace_safeloras(pipe, safeloras,**kwargs)
         tok_dict = parse_safeloras_embeds(safeloras)
         if patch_ti:
             apply_learned_embed_in_clip(

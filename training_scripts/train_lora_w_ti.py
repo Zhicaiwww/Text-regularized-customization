@@ -9,7 +9,7 @@ import os
 import inspect
 from pathlib import Path
 from typing import Optional
-import random
+import numpy as np
 
 import torch
 import torch.nn.functional as F
@@ -31,14 +31,20 @@ from huggingface_hub import HfFolder, Repository, whoami
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 
+import sys
+sys.path.append('./')
 from lora_diffusion import (
     extract_lora_ups_down,
     inject_trainable_lora,
     safetensors_available,
     save_lora_weight,
     save_safeloras_with_embeds,
+    save_all,
+    UNET_CROSSATTN_TARGET_REPLACE,
+    UNET_DEFAULT_TARGET_REPLACE,
+    filter_unet_to_norm_weights
 )
-from lora_diffusion.xformers_utils import set_use_memory_efficient_attention_xformers
+# from lora_diffusion.xformers_utils import set_use_memory_efficient_attention_xformers
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -47,6 +53,8 @@ from pathlib import Path
 
 import random
 import re
+os.environ['DISABLE_TELEMETRY'] = 'YES'
+
 
 
 imagenet_templates_small = [
@@ -114,6 +122,25 @@ def _shuffle(lis):
 
     return random.sample(lis, len(lis))
 
+# def get_masked_identifier_latents(text_encoder,token_ids,identifier_indices,class_len,dtype=torch.float16):
+#     hidden_states = text_encoder.text_model.embeddings(input_ids=token_ids.to(text_encoder.device))
+#     bs = token_ids.size(0)
+#     class_token_len = class_len
+#     causal_attention_mask = text_encoder.text_model._build_causal_attention_mask(bs,77,dtype)
+#     if len(identifier_indices) == 0:
+#         pass
+#     else:
+#         for i, identifier_indice in zip(identifier_indices[0],identifier_indices[1]):
+#             causal_attention_mask[i,:,identifier_indice, :max(identifier_indice,1)] = torch.finfo(dtype).min
+#             causal_attention_mask[i,:,identifier_indice+class_token_len+1:,identifier_indice] = torch.finfo(dtype).min
+#     encoder_outputs = text_encoder.text_model.encoder(
+#     inputs_embeds=hidden_states,
+#     causal_attention_mask=causal_attention_mask.to(text_encoder.device),
+#     )
+
+#     last_hidden_state = encoder_outputs[0]
+#     encoder_hidden_states = text_encoder.text_model.final_layer_norm(last_hidden_state)
+#     return encoder_hidden_states
 
 class DreamBoothTiDataset(Dataset):
     """
@@ -129,17 +156,22 @@ class DreamBoothTiDataset(Dataset):
         stochastic_attribute,
         tokenizer,
         class_data_root=None,
-        class_prompt=None,
+        class_prompt_or_file=None,
         size=512,
         center_crop=False,
         color_jitter=False,
         resize=False,
         h_flip=True,
+        class_token=None,
+        repeat = 20,
+        reg_prompts = None
     ):
         self.size = size
         self.center_crop = center_crop
         self.tokenizer = tokenizer
         self.resize = resize
+        self.repeat = repeat
+        self.reg_prompts = reg_prompts 
 
         self.instance_data_root = Path(instance_data_root)
         if not self.instance_data_root.exists():
@@ -147,8 +179,8 @@ class DreamBoothTiDataset(Dataset):
 
         self.instance_images_path = list(Path(instance_data_root).iterdir())
         self.num_instance_images = len(self.instance_images_path)
-
-        self.placeholder_token = placeholder_token
+        placeholder_token = ' '.join(placeholder_token.split('+'))
+        self.customized_token = placeholder_token + ' ' + class_token if class_token else placeholder_token
         self.stochastic_attribute = (
             stochastic_attribute.split(",") if stochastic_attribute else []
         )
@@ -167,7 +199,12 @@ class DreamBoothTiDataset(Dataset):
             self.class_images_path = list(self.class_data_root.iterdir())
             self.num_class_images = len(self.class_images_path)
             self._length = max(self.num_class_images, self.num_instance_images)
-            self.class_prompt = class_prompt
+            if os.path.exists(class_prompt_or_file):
+                with open(class_prompt_or_file, 'r') as f:
+                    # remove \n at the end of each line
+                    self.class_prompts = [line.strip() for line in f.readlines()]
+            else:
+                self.class_prompts = self.num_class_images * [class_prompt_or_file]
         else:
             self.class_data_root = None
 
@@ -208,7 +245,7 @@ class DreamBoothTiDataset(Dataset):
             )
 
     def __len__(self):
-        return self._length
+        return self._length if self.class_data_root is not None else self.repeat * self._length
 
     def __getitem__(self, index):
         example = {}
@@ -221,7 +258,7 @@ class DreamBoothTiDataset(Dataset):
 
         text = random.choice(self.templates).format(
             ", ".join(
-                [self.placeholder_token]
+                [self.customized_token]
                 + _shuffle(_randomset(self.stochastic_attribute))
             )
         )
@@ -239,48 +276,134 @@ class DreamBoothTiDataset(Dataset):
             if not class_image.mode == "RGB":
                 class_image = class_image.convert("RGB")
             example["class_images"] = self.image_transforms(class_image)
+            _class_prompt = self.class_prompts[index % self.num_class_images]
             example["class_prompt_ids"] = self.tokenizer(
-                self.class_prompt,
+                _class_prompt,
                 padding="do_not_pad",
                 truncation=True,
                 max_length=self.tokenizer.model_max_length,
             ).input_ids
-
+        
+        if self.reg_prompts is not None:
+            example["reg_prompt_ids"] = self.tokenizer(
+                self.reg_prompts,
+                padding="do_not_pad",
+                truncation=True,
+                max_length=self.tokenizer.model_max_length,
+            ).input_ids
         return example
 
 
 class PromptDataset(Dataset):
     "A simple dataset to prepare the prompts to generate class images on multiple GPUs."
 
-    def __init__(self, prompt, num_samples):
-        self.prompt = prompt
+    def __init__(self, prompt_or_file, num_samples):
+        # check if prompt_or_file is a file
+        if os.path.exists(prompt_or_file): 
+            with open(prompt_or_file, 'r') as f:
+                self.prompt = list(f.readlines())
+        else:
+            self.prompt = num_samples * [prompt_or_file]
         self.num_samples = num_samples
 
     def __len__(self):
+        print("len called")
         return self.num_samples
 
     def __getitem__(self, index):
+        print("getitem called")
         example = {}
-        example["prompt"] = self.prompt
+        example["prompt"] = np.random.choice(self.prompt)
         example["index"] = index
         return example
-
 
 logger = get_logger(__name__)
 
 
-def save_progress(text_encoder, placeholder_token_id, accelerator, args, save_path):
+def save_progress(text_encoder, placeholder_token_ids, accelerator, args, save_path):
     logger.info("Saving embeddings")
     learned_embeds = (
         accelerator.unwrap_model(text_encoder)
         .get_input_embeddings()
-        .weight[placeholder_token_id]
+        .weight[placeholder_token_ids]
     )
     print("Current Learned Embeddings: ", learned_embeds[:4])
     print("saved to ", save_path)
     learned_embeds_dict = {args.placeholder_token: learned_embeds.detach().cpu()}
     torch.save(learned_embeds_dict, save_path)
 
+def loss_step(batch, unet, vae, text_encoder, noise_scheduler, weight_dtype, args, return_verbose=False):
+    if not args.cached_latents:
+        latents = vae.encode(
+            batch["pixel_values"].to(dtype=weight_dtype)
+        ).latent_dist.sample()
+        latents = latents * 0.18215
+    else:
+        latents = batch["pixel_values"]
+
+    # Sample noise that we'll add to the latents
+    noise = torch.randn_like(latents)
+    bsz = latents.shape[0]
+    # Sample a random timestep for each image
+    timesteps = torch.randint(
+        0,
+        noise_scheduler.config.num_train_timesteps,
+        (bsz,),
+        device=latents.device,
+    )
+    timesteps = timesteps.long()
+
+
+
+    # Add noise to the latents according to the noise magnitude at each timestep
+    # (this is the forward diffusion process)
+    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
+    # if args.mask_identifier_causal_attention and not args.initializer_token_as_class:
+    #     encoder_hidden_states = get_masked_identifier_latents(text_encoder, batch["input_ids"], batch["identifier_indices"],class_len,dtype = latents.dtype)
+    # # Get the text embedding for conditioning
+    # else:
+    encoder_hidden_states = text_encoder(batch["input_ids"])[0]
+
+    # Predict the noise residual
+    model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+
+    # Get the target for loss depending on the prediction type
+    if noise_scheduler.config.prediction_type == "epsilon":
+        target = noise
+    elif noise_scheduler.config.prediction_type == "v_prediction":
+        target = noise_scheduler.get_velocity(latents, noise, timesteps)
+    else:
+        raise ValueError(
+            f"Unknown prediction type {noise_scheduler.config.prediction_type}"
+        )
+
+    if args.with_prior_preservation:
+        # Chunk the noise and model_pred into two parts and compute the loss on each part separately.
+        model_pred, model_pred_prior = torch.chunk(model_pred, 2, dim=0)
+        target, target_prior = torch.chunk(target, 2, dim=0)
+
+        # Compute instance loss
+        loss = (
+            F.mse_loss(model_pred.float(), target.float(), reduction="none")
+            .mean([1, 2, 3])
+            .mean()
+        )
+
+        # Compute prior loss
+        prior_loss = F.mse_loss(
+            model_pred_prior.float(), target_prior.float(), reduction="mean"
+        )
+
+        # Add the prior loss to the instance loss.
+        loss = loss + args.prior_loss_weight * prior_loss
+    else:
+        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+    if not return_verbose:
+        return loss
+    else:
+        return loss, timesteps,
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -339,7 +462,7 @@ def parse_args(input_args=None):
         help="The prompt with identifier specifying the instance",
     )
     parser.add_argument(
-        "--class_prompt",
+        "--class_prompt_or_file",
         type=str,
         default=None,
         help="The prompt to specify images in the same class as provided instance images.",
@@ -362,7 +485,7 @@ def parse_args(input_args=None):
         default=100,
         help=(
             "Minimal class images for prior preservation loss. If not have enough images, additional images will be"
-            " sampled with class_prompt."
+            " sampled with class_prompt_or_file."
         ),
     )
     parser.add_argument(
@@ -563,11 +686,15 @@ def parse_args(input_args=None):
         "--initializer_token",
         type=str,
         default=None,
-        required=True,
         help="A token to use as initializer word.",
     )
     parser.add_argument(
-        "--unfreeze_lora_step",
+        "--initializer_token_as_class",
+        action= "store_true",
+        help="Whether to use the initializer token as a class token.",
+    ) 
+    parser.add_argument(
+        "--ti_train_step",
         type=int,
         default=500,
         help="Save checkpoint every X updates steps.",
@@ -587,6 +714,19 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--use_xformers", action="store_true", help="Whether or not to use xformers"
     )
+    parser.add_argument(
+        "--cached_latents", action="store_true", help="cached_latents"
+    )
+    parser.add_argument(
+        "--mask_identifier_causal_attention", action="store_true", help="cached_latents"
+    )
+    parser.add_argument("--filter_crossattn_str",type = str, default='full', help='full or self or cross or cross+self')
+    parser.add_argument("--enable_norm_reg", action="store_true", help="enable_norm_reg")
+    parser.add_argument("--enable_text_reg", action="store_true", help="enable_text_reg")
+    parser.add_argument("--scale_norm_reg", action="store_true", help="scale_norm_reg")
+    parser.add_argument("--norm_reg_loss_weight", type=float, default=0.01, help="norm_reg_loss_weight")
+    parser.add_argument("--text_reg_loss_weight", type=float, default=0.01, help="text_reg_loss_weight")
+    parser.add_argument("--reg_prompts", type = str, default=None, help="reg_prompts")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -600,17 +740,28 @@ def parse_args(input_args=None):
     if args.with_prior_preservation:
         if args.class_data_dir is None:
             raise ValueError("You must specify a data directory for class images.")
-        if args.class_prompt is None:
+        if args.class_prompt_or_file is None:
             raise ValueError("You must specify prompt for class images.")
     else:
         if args.class_data_dir is not None:
             logger.warning(
                 "You need not use --class_data_dir without --with_prior_preservation."
             )
-        if args.class_prompt is not None:
+        if args.class_prompt_or_file is not None:
             logger.warning(
-                "You need not use --class_prompt without --with_prior_preservation."
+                "You need not use --class_prompt_or_file without --with_prior_preservation."
             )
+    if args.enable_norm_reg or args.enable_text_reg:
+        assert args.filter_crossattn_str in ['self', 'cross', 'cross+self']
+        if args.enable_text_reg and args.filter_crossattn_str in ['cross', 'cross+self']:
+            assert args.reg_prompts is not None
+            print(f"Reg. enabled with prompts: \n {args.reg_prompts}")
+            print(f"Reg. uses both text regularization and norm regularization: ")
+            print(f"norm_reg_loss_weight: {args.norm_reg_loss_weight}  -  text_reg_loss_weight: {args.text_reg_loss_weight}")
+
+        else:
+            print(f"Reg. uses norm regularization: ")
+            print(f"norm_reg_loss_weight: {args.norm_reg_loss_weight}")
 
     if not safetensors_available:
         if args.output_format == "both":
@@ -637,6 +788,8 @@ def unfreeze_params(params):
 
 
 def main(args):
+    
+
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator = Accelerator(
@@ -683,7 +836,7 @@ def main(args):
             num_new_images = args.num_class_images - cur_class_images
             logger.info(f"Number of class images to sample: {num_new_images}.")
 
-            sample_dataset = PromptDataset(args.class_prompt, num_new_images)
+            sample_dataset = PromptDataset(args.class_prompt_or_file, num_new_images)
             sample_dataloader = torch.utils.data.DataLoader(
                 sample_dataset, batch_size=args.sample_batch_size
             )
@@ -705,7 +858,10 @@ def main(args):
                         / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
                     )
                     image.save(image_filename)
-
+                    # add the example["prompt"] to the prompt file
+                    if os.path.exists(args.class_prompt_or_file):
+                        with open(args.class_prompt_or_file, "w") as f:
+                            f.write(f"{example['prompt']}\n")
             del pipeline
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -722,7 +878,6 @@ def main(args):
             args.tokenizer_name,
             revision=args.revision,
         )
-
     elif args.pretrained_model_name_or_path:
         tokenizer = CLIPTokenizer.from_pretrained(
             args.pretrained_model_name_or_path,
@@ -730,22 +885,28 @@ def main(args):
             revision=args.revision,
         )
     # Add the placeholder token in tokenizer
-    num_added_tokens = tokenizer.add_tokens(args.placeholder_token)
+    placeholder_tokens = args.placeholder_token.split('+')
+    num_added_tokens = tokenizer.add_tokens(placeholder_tokens)
     if num_added_tokens == 0:
         raise ValueError(
             f"The tokenizer already contains the token {args.placeholder_token}. Please pass a different"
             " `placeholder_token` that is not already in the tokenizer."
         )
 
-    # Convert the initializer_token, placeholder_token to ids
-    token_ids = tokenizer.encode(args.initializer_token, add_special_tokens=False)
-    # Check if initializer_token is a single token or a sequence of tokens
-    if len(token_ids) > 1:
-        raise ValueError("The initializer token must be a single token.")
+    if args.initializer_token_as_class:
+        # Convert the initializer_token, placeholder_token to ids
+        token_ids = tokenizer.encode(args.initializer_token, add_special_tokens=False)
+        # Check if initializer_token is a single token or a sequence of tokens
+        if len(token_ids) > 1:
+            raise ValueError("The initializer token must be a single token.")
 
-    initializer_token_id = token_ids[0]
-    placeholder_token_id = tokenizer.convert_tokens_to_ids(args.placeholder_token)
-
+        initializer_token_id = token_ids[0]
+    else:
+        initializer_token_id = 42170
+        
+    placeholder_token_ids = tokenizer.convert_tokens_to_ids(placeholder_tokens)
+    class_token_ids = tokenizer(args.initializer_token, truncation=False, add_special_tokens=False)["input_ids"]  if not args.initializer_token_as_class else []
+    class_len = torch.tensor(len(class_token_ids))  
     # Load models and create wrapper for stable diffusion
     text_encoder = CLIPTextModel.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -756,7 +917,7 @@ def main(args):
     text_encoder.resize_token_embeddings(len(tokenizer))
     # Initialise the newly added placeholder token with the embeddings of the initializer token
     token_embeds = text_encoder.get_input_embeddings().weight.data
-    token_embeds[placeholder_token_id] = token_embeds[initializer_token_id]
+    token_embeds[placeholder_token_ids] = token_embeds[initializer_token_id].unsqueeze(0).repeat(len(placeholder_token_ids), 1)
 
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_vae_name_or_path or args.pretrained_model_name_or_path,
@@ -769,12 +930,23 @@ def main(args):
         revision=args.revision,
     )
     unet.requires_grad_(False)
-    unet_lora_params, _ = inject_trainable_lora(unet, r=args.lora_rank)
+
+
+    if args.filter_crossattn_str == 'full':
+        target_module = UNET_DEFAULT_TARGET_REPLACE
+    else:
+        target_module = UNET_CROSSATTN_TARGET_REPLACE
+    unet_lora_params, _ = inject_trainable_lora(unet,target_replace_module=target_module, r=args.lora_rank, filter_crossattn_str = args.filter_crossattn_str)
+
+    if args.enable_norm_reg or args.enable_text_reg: 
+        to_reg_params = filter_unet_to_norm_weights(unet, target_replace_module=target_module)
 
     for _up, _down in extract_lora_ups_down(unet):
         print("Before training: Unet First Layer lora up", _up.weight.data)
-        print("Before training: Unet First Layer lora down", _down.weight.data)
+        print("Before training: Unet First Layer lora up", _up.weight.shape)
+        print("Before training: Unet First Layer lora down", _down.weight.shape)
         break
+
 
     vae.requires_grad_(False)
 
@@ -797,9 +969,9 @@ def main(args):
         print("Before training: text encoder First Layer lora down", _down.weight.data)
         break
 
-    if args.use_xformers:
-        set_use_memory_efficient_attention_xformers(unet, True)
-        set_use_memory_efficient_attention_xformers(vae, True)
+    # if args.use_xformers:
+    #     set_use_memory_efficient_attention_xformers(unet, True)
+    #     set_use_memory_efficient_attention_xformers(vae, True)
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -826,27 +998,25 @@ def main(args):
         optimizer_class = bnb.optim.AdamW8bit
     else:
         optimizer_class = torch.optim.AdamW
-
-    params_to_optimize = [
-        {"params": itertools.chain(*unet_lora_params), "lr": args.learning_rate},
-        {
-            "params": itertools.chain(*text_encoder_lora_params),
-            "lr": args.learning_rate_text,
+    
+    params_ti_to_optimize = [ 
+        {"params": text_encoder.get_input_embeddings().parameters(),
+         "lr": args.learning_rate_ti,
         },
-        {
-            "params": text_encoder.get_input_embeddings().parameters(),
-            "lr": args.learning_rate_ti,
+]
+    params_to_optimize = [
+        {"params": itertools.chain(*unet_lora_params) if not args.just_ti else [], "lr": args.learning_rate},
+        {"params": itertools.chain(*text_encoder_lora_params) if not args.just_ti and args.train_text_encoder else [],
+            "lr": args.learning_rate_text,
         },
     ]
 
-    if args.just_ti:
-        params_to_optimize = [
-            {
-                "params": text_encoder.get_input_embeddings().parameters(),
-                "lr": args.learning_rate_ti,
-            }
-        ]
-
+    optimizer_ti = optimizer_class(
+        params_ti_to_optimize,
+        betas=(args.adam_beta1, args.adam_beta2),
+        weight_decay=args.adam_weight_decay,
+        eps=args.adam_epsilon,
+    )
     optimizer = optimizer_class(
         params_to_optimize,
         betas=(args.adam_beta1, args.adam_beta2),
@@ -858,20 +1028,53 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="scheduler"
     )
 
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+
+    # For mixed precision training we cast the text_encoder and vae weights to half-precision
+    # as these models are only used for inference, keeping weights in full precision is not required.
+    vae.to(accelerator.device, dtype=weight_dtype)
+
+    #################################################Prepare Dataset################################################ 
+
     train_dataset = DreamBoothTiDataset(
         instance_data_root=args.instance_data_dir,
         placeholder_token=args.placeholder_token,
         stochastic_attribute=args.stochastic_attribute,
         learnable_property=args.learnable_property,
         class_data_root=args.class_data_dir if args.with_prior_preservation else None,
-        class_prompt=args.class_prompt,
+        class_prompt_or_file=args.class_prompt_or_file,
         tokenizer=tokenizer,
         size=args.resolution,
         center_crop=args.center_crop,
         color_jitter=args.color_jitter,
         resize=args.resize,
+        class_token = args.initializer_token if not args.initializer_token_as_class else None,
+        reg_prompts= args.reg_prompts if args.enable_text_reg else None,
     )
-
+    
+    if args.cached_latents:
+        cached_latents_dataset = []
+        for idx in tqdm(range(len(train_dataset))):
+            batch = train_dataset[idx]
+            # rint(batch)
+            latents = vae.encode(
+                batch["instance_images"].unsqueeze(0).to(dtype=vae.dtype).to(vae.device)
+            ).latent_dist.sample()
+            latents = latents * 0.18215
+            batch["instance_images"] = latents.squeeze(0)
+            
+            if args.with_prior_preservation:
+                latents = vae.encode(
+                    batch["class_images"].unsqueeze(0).to(dtype=vae.dtype).to(vae.device)
+                ).latent_dist.sample()
+                latents = latents * 0.18215
+                batch["class_images"] = latents.squeeze(0)
+            cached_latents_dataset.append(batch)
+            
     def collate_fn(examples):
         input_ids = [example["instance_prompt_ids"] for example in examples]
         pixel_values = [example["instance_images"] for example in examples]
@@ -891,35 +1094,64 @@ def main(args):
             max_length=tokenizer.model_max_length,
             return_tensors="pt",
         ).input_ids
+        # find the index of the placeholder_token_id in the input_ids, if not find it will be -1
+        # identifier_indices= torch.where(input_ids == placeholder_token_id)
 
         batch = {
             "input_ids": input_ids,
+            # "identifier_indices": identifier_indices,
             "pixel_values": pixel_values,
         }
+        if args.enable_text_reg:
+            reg_ids = tokenizer.pad({"input_ids": [example["reg_prompt_ids"] for example in examples]},
+                                    padding="max_length",
+                                    max_length=tokenizer.model_max_length,
+                                    return_tensors="pt").input_ids
+            batch["reg_ids"] = reg_ids 
         return batch
 
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=args.train_batch_size,
-        shuffle=True,
-        collate_fn=collate_fn,
-        num_workers=1,
-    )
+    
+    if args.cached_latents:
 
+        train_dataloader = torch.utils.data.DataLoader(
+            cached_latents_dataset,
+            batch_size=args.train_batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+        )
+        print("Using cached latent.")
+    else:
+        train_dataloader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=args.train_batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+        )
+
+
+
+    #################################################Prepare Training Hyper################################################ 
     # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
     )
+    
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
-
+    
+    
+    lr_scheduler_ti = get_scheduler(
+        args.lr_scheduler,
+        optimizer=optimizer_ti,
+        num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
+        num_training_steps=args.ti_train_step * args.gradient_accumulation_steps,
+    )
+    
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
-        num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
+        num_training_steps=(args.max_train_steps - args.ti_train_step) * args.gradient_accumulation_steps,
     )
 
     (
@@ -928,22 +1160,12 @@ def main(args):
         train_dataloader,
     ) = accelerator.prepare(unet, text_encoder, train_dataloader)
 
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-
-    # For mixed precision training we cast the text_encoder and vae weights to half-precision
-    # as these models are only used for inference, keeping weights in full precision is not required.
-    vae.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(
         len(train_dataloader) / args.gradient_accumulation_steps
     )
-    if overrode_max_train_steps:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+
     # Afterwards we recalculate our number of training epochs
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
@@ -979,102 +1201,118 @@ def main(args):
 
     orig_embeds_params = text_encoder.get_input_embeddings().weight.data.clone()
 
+    # Let's make sure we don't update any embedding weights besides the newly added token
+    index_no_updates = torch.ones(len(tokenizer), dtype=torch.bool)
+    for placeholder_token_id in placeholder_token_ids:
+        index_no_updates *= torch.arange(len(tokenizer)) != placeholder_token_id 
+    index_updates = ~index_no_updates
+
+    if args.cached_latents:
+        del vae
+        vae = None
+        
+
+    #################################################Start Training################################################ 
     for epoch in range(args.num_train_epochs):
         unet.train()
         text_encoder.train()
 
         for step, batch in enumerate(train_dataloader):
             # freeze unet and text encoder during ti training
-            if global_step < args.unfreeze_lora_step:
-                optimizer.param_groups[0]["lr"] = 0.0
-                optimizer.param_groups[1]["lr"] = 0.0
+            if global_step < args.ti_train_step:
+                text_encoder.eval()
+                unet.eval()
+                loss = loss_step(batch, unet, vae, text_encoder, noise_scheduler, weight_dtype, args) 
+
+                accelerator.backward(loss)
+                optimizer_ti.step()
+                lr_scheduler_ti.step()
+                progress_bar.update(1)
+                optimizer_ti.zero_grad()
+                global_step += 1
+
+
+
+    ################################################Norm Embedding########################################### 
+                clip_ti_decay = True
+                with torch.no_grad():
+                    if clip_ti_decay:
+                        # normalize embeddings
+                        pre_norm = (
+                            text_encoder.get_input_embeddings()
+                            .weight[index_updates, :]
+                            .norm(dim=-1, keepdim=True)
+                        )
+
+                        lambda_ = min(1.0, 100 * lr_scheduler.get_last_lr()[0])
+                        text_encoder.get_input_embeddings().weight[
+                            index_updates
+                        ] = F.normalize(
+                            text_encoder.get_input_embeddings().weight[
+                                index_updates, :
+                            ],
+                            dim=-1,
+                        ) * (
+                            pre_norm + lambda_ * (0.4 - pre_norm)
+                        )
+                        print(pre_norm)
+
+                    current_norm = (
+                        text_encoder.get_input_embeddings()
+                        .weight[index_updates, :]
+                        .norm(dim=-1)
+                    )
+
+                    text_encoder.get_input_embeddings().weight[
+                        index_no_updates
+                    ] = orig_embeds_params[index_no_updates]
+                    print(f"Current Norm : {current_norm}")                
+            
             else:  # begin learning with unet and text encoder
-                optimizer.param_groups[0]["lr"] = args.learning_rate
-                optimizer.param_groups[1]["lr"] = args.learning_rate_text
-                optimizer.param_groups[2]["lr"] = 0.0  # stop learning ti
+                text_encoder.train()  
+                unet.train() 
+                loss, timesteps = loss_step(batch, unet, vae, text_encoder, noise_scheduler, weight_dtype, args, return_verbose = True) 
 
-            # Convert images to latent space
-            latents = vae.encode(
-                batch["pixel_values"].to(dtype=weight_dtype)
-            ).latent_dist.sample()
-            latents = latents * 0.18215
+                if args.enable_norm_reg:
+                    # TODO
+                    if args.scale_norm_reg:
+                        norm_regularization_scaler = 1 - noise_scheduler.alphas_cumprod[timesteps]
+                    else:
+                        norm_regularization_scaler = torch.ones_like(timesteps)
 
-            # Sample noise that we'll add to the latents
-            noise = torch.randn_like(latents)
-            bsz = latents.shape[0]
-            # Sample a random timestep for each image
-            timesteps = torch.randint(
-                0,
-                noise_scheduler.config.num_train_timesteps,
-                (bsz,),
-                device=latents.device,
-            )
-            timesteps = timesteps.long()
+                    _norm_reg_loss = []
+                    for module in to_reg_params["other_loras"]:
+                        _norm_reg_loss.append(module.get_reg_loss())
+                    if len(_norm_reg_loss):
+                        norm_reg_loss = torch.mean(sum(_norm_reg_loss)/len(_norm_reg_loss) * norm_regularization_scaler.to(_norm_reg_loss[0].device))
+                        loss += args.norm_reg_loss_weight * norm_reg_loss
 
-            # Add noise to the latents according to the noise magnitude at each timestep
-            # (this is the forward diffusion process)
-            noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                if args.enable_text_reg:
+                    c_reg = text_encoder(batch["reg_ids"])[0]
+                    _text_reg_loss = []
+                    for module in to_reg_params["cross_project_loras"]:
+                        _text_reg_loss.append(module.get_reg_loss(c_reg))
+                    if len(_text_reg_loss):
+                        text_reg_loss = torch.mean(sum(_text_reg_loss)/len(_text_reg_loss))
+                        loss += args.text_reg_loss_weight * text_reg_loss
 
-            # Get the text embedding for conditioning
-            encoder_hidden_states = text_encoder(batch["input_ids"])[0]
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    params_to_clip = (
+                        itertools.chain(unet.parameters(), text_encoder.parameters())
+                        if args.train_text_encoder
+                        else unet.parameters()
+                    )
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-            # Predict the noise residual
-            model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+                optimizer.step()
+                lr_scheduler.step()
+                progress_bar.update(1)
+                optimizer.zero_grad()
+                global_step += 1
 
-            # Get the target for loss depending on the prediction type
-            if noise_scheduler.config.prediction_type == "epsilon":
-                target = noise
-            elif noise_scheduler.config.prediction_type == "v_prediction":
-                target = noise_scheduler.get_velocity(latents, noise, timesteps)
-            else:
-                raise ValueError(
-                    f"Unknown prediction type {noise_scheduler.config.prediction_type}"
-                )
 
-            if args.with_prior_preservation:
-                # Chunk the noise and model_pred into two parts and compute the loss on each part separately.
-                model_pred, model_pred_prior = torch.chunk(model_pred, 2, dim=0)
-                target, target_prior = torch.chunk(target, 2, dim=0)
 
-                # Compute instance loss
-                loss = (
-                    F.mse_loss(model_pred.float(), target.float(), reduction="none")
-                    .mean([1, 2, 3])
-                    .mean()
-                )
-
-                # Compute prior loss
-                prior_loss = F.mse_loss(
-                    model_pred_prior.float(), target_prior.float(), reduction="mean"
-                )
-
-                # Add the prior loss to the instance loss.
-                loss = loss + args.prior_loss_weight * prior_loss
-            else:
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
-            accelerator.backward(loss)
-            if accelerator.sync_gradients:
-                params_to_clip = (
-                    itertools.chain(unet.parameters(), text_encoder.parameters())
-                    if args.train_text_encoder
-                    else unet.parameters()
-                )
-                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
-
-            optimizer.step()
-            lr_scheduler.step()
-            progress_bar.update(1)
-            optimizer.zero_grad()
-
-            # Let's make sure we don't update any embedding weights besides the newly added token
-            index_no_updates = torch.arange(len(tokenizer)) != placeholder_token_id
-            with torch.no_grad():
-                text_encoder.get_input_embeddings().weight[
-                    index_no_updates
-                ] = orig_embeds_params[index_no_updates]
-
-            global_step += 1
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -1094,29 +1332,58 @@ def main(args):
                             if accepts_keep_fp32_wrapper
                             else {}
                         )
-                        pipeline = StableDiffusionPipeline.from_pretrained(
-                            args.pretrained_model_name_or_path,
-                            unet=accelerator.unwrap_model(unet, **extra_args),
-                            text_encoder=accelerator.unwrap_model(
-                                text_encoder, **extra_args
-                            ),
-                            revision=args.revision,
-                        )
+                        unwarp_text_encoder = accelerator.unwrap_model(text_encoder, **extra_args)
+                        unwarp_unet = accelerator.unwrap_model(unet, **extra_args)
+                        # pipeline = StableDiffusionPipeline.from_pretrained(
+                        #     args.pretrained_model_name_or_path,
+                        #     unet=accelerator.unwrap_model(unet, **extra_args),
+                        #     text_encoder=accelerator.unwrap_model(
+                        #         text_encoder, **extra_args
+                        #     ),
+                        #     revision=args.revision,
+                        # )
+                        
+                        if args.output_format == "pt" or args.output_format == "both":
+                            filename_unet = (
+                                f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.pt"
+                            )
+                            filename_text_encoder = f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.text_encoder.pt"
+                            print(f"save weights {filename_unet}, {filename_text_encoder}")
+                            save_lora_weight(unwarp_unet, filename_unet,target_replace_module = target_module)
 
-                        filename_unet = (
-                            f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.pt"
-                        )
-                        filename_text_encoder = f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.text_encoder.pt"
-                        print(f"save weights {filename_unet}, {filename_text_encoder}")
-                        save_lora_weight(pipeline.unet, filename_unet)
+                            save_lora_weight(
+                                unwarp_text_encoder,
+                                filename_text_encoder,
+                                target_replace_module=["CLIPAttention"],
+                            )
+                            filename_ti = f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.ti.pt"
 
-                        save_lora_weight(
-                            pipeline.text_encoder,
-                            filename_text_encoder,
-                            target_replace_module=["CLIPAttention"],
-                        )
+                            save_progress(
+                                unwarp_text_encoder,
+                                placeholder_token_ids,
+                                accelerator,
+                                args,
+                                filename_ti,
+                            )
 
-                        for _up, _down in extract_lora_ups_down(pipeline.unet):
+                        if args.output_format == "safe" or args.output_format == "both":
+                            loras = {}
+                            loras["unet"] = (unwarp_unet, target_module)
+                            loras["text_encoder"] = (unwarp_text_encoder, {"CLIPAttention"})
+                            embeds = {}
+                            for placeholder_token, placeholder_token_id in zip(placeholder_tokens,placeholder_token_ids):
+                                learned_embed = (
+                                    unwarp_text_encoder
+                                    .get_input_embeddings()
+                                    .weight[placeholder_token_id]
+                                )
+
+                                embeds[placeholder_token] = learned_embed.detach().cpu()
+                            save_safeloras_with_embeds(
+                                loras, embeds, args.output_dir + f"/lora_weight_e{epoch}_s{global_step}.safetensors"
+                            ) 
+
+                        for _up, _down in extract_lora_ups_down(unwarp_unet):
                             print(
                                 "First Unet Layer's Up Weight is now : ",
                                 _up.weight.data,
@@ -1128,7 +1395,7 @@ def main(args):
                             break
 
                         for _up, _down in extract_lora_ups_down(
-                            pipeline.text_encoder,
+                            unwarp_text_encoder,
                             target_replace_module=["CLIPAttention"],
                         ):
                             print(
@@ -1141,30 +1408,28 @@ def main(args):
                             )
                             break
 
-                        filename_ti = f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.ti.pt"
-
-                        save_progress(
-                            pipeline.text_encoder,
-                            placeholder_token_id,
-                            accelerator,
-                            args,
-                            filename_ti,
-                        )
+  
 
                         last_save = global_step
 
-                logs = {
-                    "loss": loss.detach().item(),
-                    "lr": lr_scheduler.get_last_lr()[0],
-                }
-                progress_bar.set_postfix(**logs)
-                accelerator.log(logs, step=global_step)
+            logs = {
+                "loss": loss.detach().item(),
+                "lr": lr_scheduler.get_last_lr()[0],
+                "placeholder_norm": current_norm.detach().item() if current_norm else 0.0,
+            }
+            if args.enable_text_reg:
+                logs["text_reg_loss"] = text_reg_loss.detach().item()
+            if args.enable_norm_reg:
+                logs["norm_reg_loss"] = norm_reg_loss.detach().item()
+            progress_bar.set_postfix(**logs)
+            accelerator.log(logs, step=global_step)
 
-                if global_step >= args.max_train_steps:
-                    break
+            if global_step >= args.max_train_steps:
+                break
+
     accelerator.wait_for_everyone()
 
-    # Create the pipeline using using the trained modules and save it.
+    # Create the pipeline using the trained modules and save it.
     if accelerator.is_main_process:
         pipeline = StableDiffusionPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
@@ -1176,7 +1441,7 @@ def main(args):
         print("\n\nLora TRAINING DONE!\n\n")
 
         if args.output_format == "pt" or args.output_format == "both":
-            save_lora_weight(pipeline.unet, args.output_dir + "/lora_weight.pt")
+            save_lora_weight(unet, args.output_dir + "/lora_weight.pt")
 
             save_lora_weight(
                 text_encoder,
@@ -1186,13 +1451,13 @@ def main(args):
 
         if args.output_format == "safe" or args.output_format == "both":
             loras = {}
-            loras["unet"] = (pipeline.unet, {"CrossAttention", "Attention", "GEGLU"})
-            loras["text_encoder"] = (pipeline.text_encoder, {"CLIPAttention"})
+            loras["unet"] = (unet, {"CrossAttention", "Attention", "GEGLU"})
+            loras["text_encoder"] = (text_encoder, {"CLIPAttention"})
 
             learned_embeds = (
-                accelerator.unwrap_model(text_encoder)
+                text_encoder
                 .get_input_embeddings()
-                .weight[placeholder_token_id]
+                .weight[placeholder_token_ids]
             )
 
             embeds = {args.placeholder_token: learned_embeds.detach().cpu()}

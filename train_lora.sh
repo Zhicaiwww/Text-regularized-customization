@@ -6,7 +6,6 @@ lora_pti \
   --pretrained_model_name_or_path=$MODEL_NAME  \
   --instance_data_dir=$INSTANCE_DIR \
   --output_dir=$OUTPUT_DIR \
-  --train_text_encoder \
   --resolution=512 \
   --train_batch_size=1 \
   --gradient_accumulation_steps=4 \
@@ -20,13 +19,14 @@ lora_pti \
   --placeholder_tokens="<s1>|<s2>" \
   --use_template="object"\
   --save_steps=100 \
-  --max_train_steps_ti=1000 \
+  --max_train_steps_ti=10 \
   --max_train_steps_tuning=1000 \
   --perform_inversion=True \
   --clip_ti_decay \
   --weight_decay_ti=0.000 \
-  --weight_decay_lora=1\
+  --weight_decay_lora=10\
   --continue_inversion \
   --continue_inversion_lr=1e-4 \
-  --device="cuda:7" \
+  --device="cuda:2" \
   --lora_rank=1 \
+  --train_text_encoder \

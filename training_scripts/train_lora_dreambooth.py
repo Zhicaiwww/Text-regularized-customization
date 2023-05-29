@@ -9,6 +9,7 @@ import os
 import inspect
 from pathlib import Path
 from typing import Optional
+import numpy as np
 
 import torch
 import torch.nn.functional as F
@@ -60,7 +61,7 @@ class DreamBoothDataset(Dataset):
         instance_prompt,
         tokenizer,
         class_data_root=None,
-        class_prompt=None,
+        class_prompt_or_file=None,
         size=512,
         center_crop=False,
         color_jitter=False,
@@ -87,7 +88,11 @@ class DreamBoothDataset(Dataset):
             self.class_images_path = list(self.class_data_root.iterdir())
             self.num_class_images = len(self.class_images_path)
             self._length = max(self.num_class_images, self.num_instance_images)
-            self.class_prompt = class_prompt
+            if os.path.exists(class_prompt_or_file):
+                with open(class_prompt_or_file, 'r') as f:
+                    self.class_prompts = list(f.readlines())
+            else:
+                self.class_prompts = self.num_class_images * [class_prompt_or_file]
         else:
             self.class_data_root = None
 
@@ -135,8 +140,9 @@ class DreamBoothDataset(Dataset):
             if not class_image.mode == "RGB":
                 class_image = class_image.convert("RGB")
             example["class_images"] = self.image_transforms(class_image)
+            _class_prompt = self.class_prompts[index % self.num_class_images]
             example["class_prompt_ids"] = self.tokenizer(
-                self.class_prompt,
+                _class_prompt,
                 padding="do_not_pad",
                 truncation=True,
                 max_length=self.tokenizer.model_max_length,
@@ -148,19 +154,25 @@ class DreamBoothDataset(Dataset):
 class PromptDataset(Dataset):
     "A simple dataset to prepare the prompts to generate class images on multiple GPUs."
 
-    def __init__(self, prompt, num_samples):
-        self.prompt = prompt
+    def __init__(self, prompt_or_file, num_samples):
+        # check if prompt_or_file is a file
+        if os.path.exists(prompt_or_file): 
+            with open(prompt_or_file, 'r') as f:
+                self.prompt = list(f.readlines())
+        else:
+            self.prompt = num_samples * [prompt_or_file]
         self.num_samples = num_samples
 
     def __len__(self):
+        print("len called")
         return self.num_samples
 
     def __getitem__(self, index):
+        print("getitem called")
         example = {}
-        example["prompt"] = self.prompt
+        example["prompt"] = np.random.choice(self.prompt)
         example["index"] = index
         return example
-
 
 logger = get_logger(__name__)
 
@@ -215,7 +227,7 @@ def parse_args(input_args=None):
         help="The prompt with identifier specifying the instance",
     )
     parser.add_argument(
-        "--class_prompt",
+        "--class_prompt_or_file",
         type=str,
         default=None,
         help="The prompt to specify images in the same class as provided instance images.",
@@ -238,7 +250,7 @@ def parse_args(input_args=None):
         default=100,
         help=(
             "Minimal class images for prior preservation loss. If not have enough images, additional images will be"
-            " sampled with class_prompt."
+            " sampled with class_prompt_or_file."
         ),
     )
     parser.add_argument(
@@ -457,16 +469,16 @@ def parse_args(input_args=None):
     if args.with_prior_preservation:
         if args.class_data_dir is None:
             raise ValueError("You must specify a data directory for class images.")
-        if args.class_prompt is None:
+        if args.class_prompt_or_file is None:
             raise ValueError("You must specify prompt for class images.")
     else:
         if args.class_data_dir is not None:
             logger.warning(
                 "You need not use --class_data_dir without --with_prior_preservation."
             )
-        if args.class_prompt is not None:
+        if args.class_prompt_or_file is not None:
             logger.warning(
-                "You need not use --class_prompt without --with_prior_preservation."
+                "You need not use --class_prompt_or_file without --with_prior_preservation."
             )
 
     if not safetensors_available:
@@ -530,7 +542,7 @@ def main(args):
             num_new_images = args.num_class_images - cur_class_images
             logger.info(f"Number of class images to sample: {num_new_images}.")
 
-            sample_dataset = PromptDataset(args.class_prompt, num_new_images)
+            sample_dataset = PromptDataset(args.class_prompt_or_file, num_new_images)
             sample_dataloader = torch.utils.data.DataLoader(
                 sample_dataset, batch_size=args.sample_batch_size
             )
@@ -552,7 +564,10 @@ def main(args):
                         / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
                     )
                     image.save(image_filename)
-
+                    # add the example["prompt"] to the prompt file
+                    if os.path.exists(args.class_prompt_or_file):
+                        with open(args.class_prompt_or_file, "w") as f:
+                            f.write(f"{example['prompt']}\n")
             del pipeline
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -683,7 +698,7 @@ def main(args):
         instance_data_root=args.instance_data_dir,
         instance_prompt=args.instance_prompt,
         class_data_root=args.class_data_dir if args.with_prior_preservation else None,
-        class_prompt=args.class_prompt,
+        class_prompt_or_file=args.class_prompt_or_file,
         tokenizer=tokenizer,
         size=args.resolution,
         center_crop=args.center_crop,

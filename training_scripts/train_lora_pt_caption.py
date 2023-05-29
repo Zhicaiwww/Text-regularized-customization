@@ -708,9 +708,9 @@ def main(args):
         optimizer_class = torch.optim.AdamW
 
     params_to_optimize = [
-        {"params": itertools.chain(*unet_lora_params), "lr": args.learning_rate},
+        {"params": itertools.chain(*unet_lora_params) if not args.just_ti else [], "lr": args.learning_rate},
         {
-            "params": itertools.chain(*text_encoder_lora_params),
+            "params": itertools.chain(*text_encoder_lora_params) if not args.just_ti and args.train_text_encoder else [],
             "lr": args.learning_rate_text,
         },
         {
@@ -719,13 +719,13 @@ def main(args):
         },
     ]
 
-    if args.just_ti:
-        params_to_optimize = [
-            {
-                "params": text_encoder.get_input_embeddings().parameters(),
-                "lr": args.learning_rate_ti,
-            }
-        ]
+    # if args.just_ti:
+    #     params_to_optimize = [
+    #         {
+    #             "params": text_encoder.get_input_embeddings().parameters(),
+    #             "lr": args.learning_rate_ti,
+    #         }
+    #     ]
 
     optimizer = optimizer_class(
         params_to_optimize,
