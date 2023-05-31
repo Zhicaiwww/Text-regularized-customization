@@ -6,15 +6,20 @@ import hashlib
 import itertools
 import math
 import os
+import random
 import inspect
 from pathlib import Path
 from typing import Optional
-import numpy as np
+import sys
+sys.path.append('./')
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-
+from PIL import Image
+from torch.utils.data import Dataset
+from torchvision import transforms
 
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -27,12 +32,10 @@ from diffusers import (
 )
 from diffusers.optimization import get_scheduler
 from huggingface_hub import HfFolder, Repository, whoami
-
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 
-import sys
-sys.path.append('./')
+
 from lora_diffusion import (
     extract_lora_ups_down,
     inject_trainable_lora,
@@ -45,69 +48,13 @@ from lora_diffusion import (
     filter_unet_to_norm_weights
 )
 # from lora_diffusion.xformers_utils import set_use_memory_efficient_attention_xformers
-from PIL import Image
-from torch.utils.data import Dataset
-from torchvision import transforms
+from reg_lora.clip_reg import IMAGENET_TEMPLATES_SMALL, IMAGENET_STYLE_TEMPLATES_SMALL, CLIPTiDataset, CLIPTiScoreCalculator
 
-from pathlib import Path
 
-import random
-import re
 os.environ['DISABLE_TELEMETRY'] = 'YES'
 
 
 
-imagenet_templates_small = [
-    "a photo of a {}",
-    "a rendering of a {}",
-    "a cropped photo of the {}",
-    "the photo of a {}",
-    "a photo of a clean {}",
-    "a photo of a dirty {}",
-    "a dark photo of the {}",
-    "a photo of my {}",
-    "a photo of the cool {}",
-    "a close-up photo of a {}",
-    "a bright photo of the {}",
-    "a cropped photo of a {}",
-    "a photo of the {}",
-    "a good photo of the {}",
-    "a photo of one {}",
-    "a close-up photo of the {}",
-    "a rendition of the {}",
-    "a photo of the clean {}",
-    "a rendition of a {}",
-    "a photo of a nice {}",
-    "a good photo of a {}",
-    "a photo of the nice {}",
-    "a photo of the small {}",
-    "a photo of the weird {}",
-    "a photo of the large {}",
-    "a photo of a cool {}",
-    "a photo of a small {}",
-]
-
-imagenet_style_templates_small = [
-    "a painting in the style of {}",
-    "a rendering in the style of {}",
-    "a cropped painting in the style of {}",
-    "the painting in the style of {}",
-    "a clean painting in the style of {}",
-    "a dirty painting in the style of {}",
-    "a dark painting in the style of {}",
-    "a picture in the style of {}",
-    "a cool painting in the style of {}",
-    "a close-up painting in the style of {}",
-    "a bright painting in the style of {}",
-    "a cropped painting in the style of {}",
-    "a good painting in the style of {}",
-    "a close-up painting in the style of {}",
-    "a rendition in the style of {}",
-    "a nice painting in the style of {}",
-    "a small painting in the style of {}",
-    "a weird painting in the style of {}",
-    "a large painting in the style of {}",
-]
 
 
 def _randomset(lis):
@@ -186,9 +133,9 @@ class DreamBoothTiDataset(Dataset):
         )
 
         self.templates = (
-            imagenet_style_templates_small
+            IMAGENET_STYLE_TEMPLATES_SMALL
             if learnable_property == "style"
-            else imagenet_templates_small
+            else IMAGENET_TEMPLATES_SMALL
         )
 
         self._length = self.num_instance_images
@@ -727,6 +674,7 @@ def parse_args(input_args=None):
     parser.add_argument("--norm_reg_loss_weight", type=float, default=0.01, help="norm_reg_loss_weight")
     parser.add_argument("--text_reg_loss_weight", type=float, default=0.01, help="text_reg_loss_weight")
     parser.add_argument("--reg_prompts", type = str, default=None, help="reg_prompts")
+    parser.add_argument("--ti_reg_type", type = str, help="clip or")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -872,6 +820,7 @@ def main(args):
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
 
+    print(args.output_dir)
     # Load the tokenizer
     if args.tokenizer_name:
         tokenizer = CLIPTokenizer.from_pretrained(
@@ -931,6 +880,22 @@ def main(args):
     )
     unet.requires_grad_(False)
 
+    if 'clip' in args.ti_reg_type: 
+
+        clip = CLIPTiScoreCalculator(text_encoder.text_model,tokenizer)
+        clip_dataset = CLIPTiDataset(
+            instance_data_root=args.instance_data_dir,
+            placeholder_token=args.placeholder_token,
+            stochastic_attribute=args.stochastic_attribute,
+            learnable_property=args.learnable_property,
+            class_data_root=args.class_data_dir if args.with_prior_preservation else None,
+            class_token = args.initializer_token if not args.initializer_token_as_class else None,
+        )
+        clip_dataloader = torch.utils.data.DataLoader(clip_dataset, batch_size=1, shuffle=False)
+        clip_data_iterator = iter(clip_dataloader)
+        clip_data_iterator = itertools.cycle(clip_data_iterator)        
+        # instance_images = [torch.randn(3,512,512)]
+        # instance_texts = ['photo of <krk1> dog']
 
     if args.filter_crossattn_str == 'full':
         target_module = UNET_DEFAULT_TARGET_REPLACE
@@ -1223,6 +1188,13 @@ def main(args):
                 text_encoder.eval()
                 unet.eval()
                 loss = loss_step(batch, unet, vae, text_encoder, noise_scheduler, weight_dtype, args) 
+                if 'clip' in args.ti_reg_type:
+                    clip_batch = next(clip_data_iterator)
+                    instance_texts = clip_batch['text']
+                    instance_images = [image for image in clip_batch['np_instance_image']]
+                    sim_loss = clip(instance_texts, instance_images) 
+                    print(f"clip similiraty {1 - sim_loss.detach().item()}")
+                    loss+= 0.001 * sim_loss
 
                 accelerator.backward(loss)
                 optimizer_ti.step()
@@ -1234,17 +1206,15 @@ def main(args):
 
 
     ################################################Norm Embedding########################################### 
-                clip_ti_decay = True
                 with torch.no_grad():
-                    if clip_ti_decay:
+                    if 'decay' in args.ti_reg_type :
                         # normalize embeddings
                         pre_norm = (
                             text_encoder.get_input_embeddings()
                             .weight[index_updates, :]
                             .norm(dim=-1, keepdim=True)
                         )
-
-                        lambda_ = min(1.0, 100 * lr_scheduler.get_last_lr()[0])
+                        lambda_ = min(1.0, 100 * lr_scheduler_ti.get_last_lr()[0])
                         text_encoder.get_input_embeddings().weight[
                             index_updates
                         ] = F.normalize(
@@ -1255,7 +1225,7 @@ def main(args):
                         ) * (
                             pre_norm + lambda_ * (0.4 - pre_norm)
                         )
-                        print(pre_norm)
+                        print(f"Pre Norm: {pre_norm}")
 
                     current_norm = (
                         text_encoder.get_input_embeddings()
@@ -1417,9 +1387,9 @@ def main(args):
                 "lr": lr_scheduler.get_last_lr()[0],
                 "placeholder_norm": current_norm.detach().item() if current_norm else 0.0,
             }
-            if args.enable_text_reg:
+            if global_step >= args.ti_train_step and args.enable_text_reg:
                 logs["text_reg_loss"] = text_reg_loss.detach().item()
-            if args.enable_norm_reg:
+            if global_step >= args.ti_train_step and args.enable_norm_reg:
                 logs["norm_reg_loss"] = norm_reg_loss.detach().item()
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)

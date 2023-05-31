@@ -59,7 +59,7 @@ def add_attn_vis_hook(model, hook_name: str = None):
 
 # os.environ["DISABLE_TELEMETRY"] = 'YES'
 if __name__ == '__main__':
-    # python scripts_my/vis_attn_map.py --lora_path output/output_dog_Ti-clip_Nonorm_3e-5/lora_weight_e37_s6000.safetensors --prompt "a <krk1> dog in grand canyon" --gpu 0 --name up_blocks.2.attentions.1.transformer_blocks.0.attn2
+    # python reg_lora/vis_attn_map.py --lora_path lora_output/checkpoints/output_dog_Ti-clip_Nonorm_3e-5/lora_weight_e37_s6000.safetensors --prompt "a <krk1> dog in grand canyon" --gpu 0 --name up_blocks.2.attentions.1.transformer_blocks.0.attn2
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--lora_path', type=str, default=None)
@@ -121,4 +121,5 @@ if __name__ == '__main__':
             plt.savefig(f'{path}_attn_map.jpg')
             # plt.imshow(vis_map[:,:,2].cpu().numpy())
                 # plt.close(fig)
+            print("saved attn map at ", f"{path}_attn_map.jpg")
             break
