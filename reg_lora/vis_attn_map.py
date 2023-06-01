@@ -7,13 +7,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import sys
-sys.path.append('/home/zhicai/poseVideo/lora-master')
+sys.path.append('/home/zhicai/poseVideo/Text-regularized-customization')
 from lora_diffusion import LoraInjectedConv2d, LoraInjectedLinear, patch_pipe, tune_lora_scale, parse_safeloras
 from lora_diffusion.lora import _find_modules, UNET_CROSSATTN_TARGET_REPLACE, DEFAULT_TARGET_REPLACE
 from reg_lora.visual import visualize_images
 from einops import rearrange
 from torch import einsum
-from diffusers.models.cross_attention import CrossAttention 
+from diffusers.models.attention import CrossAttention 
 import matplotlib.pyplot as plt
 import copy
 
@@ -59,7 +59,7 @@ def add_attn_vis_hook(model, hook_name: str = None):
 
 # os.environ["DISABLE_TELEMETRY"] = 'YES'
 if __name__ == '__main__':
-    # python reg_lora/vis_attn_map.py --lora_path lora_output/checkpoints/output_dog_Ti-clip_Nonorm_3e-5/lora_weight_e37_s6000.safetensors --prompt "a <krk1> dog in grand canyon" --gpu 0 --name up_blocks.2.attentions.1.transformer_blocks.0.attn2
+    # python reg_lora/vis_attn_map.py --lora_path lora_output/checkpoints/debug_decay_mask_0.001/lora_weight_e12_s2000.safetensors --prompt "a <krk1> dog in grand canyon" --gpu 0 --name up_blocks.2.attentions.1.transformer_blocks.0.attn2
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--lora_path', type=str, default=None)

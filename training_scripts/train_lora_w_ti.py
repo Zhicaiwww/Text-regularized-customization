@@ -746,6 +746,12 @@ def main(args):
         log_with="tensorboard",
         logging_dir=logging_dir,
     )
+    
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
 
     # Currently, it's not possible to do gradient accumulation when training two models with accelerate.accumulate
     # This will be enabled soon in accelerate. For now, we don't allow gradient accumulation when training two models.
@@ -855,7 +861,6 @@ def main(args):
         
     placeholder_token_ids = tokenizer.convert_tokens_to_ids(placeholder_tokens)
     class_token_ids = tokenizer(args.initializer_token, truncation=False, add_special_tokens=False)["input_ids"]  if not args.initializer_token_as_class else []
-    class_len = torch.tensor(len(class_token_ids))  
     # Load models and create wrapper for stable diffusion
     text_encoder = CLIPTextModel.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -882,10 +887,17 @@ def main(args):
 
     if 'clip' in args.ti_reg_type: 
 
-        clip = CLIPTiScoreCalculator(text_encoder.text_model,tokenizer)
+        clip_scorer = CLIPTiScoreCalculator(
+            text_encoder.text_model,
+            tokenizer,
+            placeholder_tokens = args.placeholder_token,
+            class_token_len = len(class_token_ids),
+            device = accelerator.device,
+            weight_dtype = weight_dtype,
+            )
         clip_dataset = CLIPTiDataset(
             instance_data_root=args.instance_data_dir,
-            placeholder_token=args.placeholder_token,
+            placeholder_tokens=args.placeholder_token,
             stochastic_attribute=args.stochastic_attribute,
             learnable_property=args.learnable_property,
             class_data_root=args.class_data_dir if args.with_prior_preservation else None,
@@ -993,11 +1005,6 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="scheduler"
     )
 
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
@@ -1059,8 +1066,6 @@ def main(args):
             max_length=tokenizer.model_max_length,
             return_tensors="pt",
         ).input_ids
-        # find the index of the placeholder_token_id in the input_ids, if not find it will be -1
-        # identifier_indices= torch.where(input_ids == placeholder_token_id)
 
         batch = {
             "input_ids": input_ids,
@@ -1188,13 +1193,20 @@ def main(args):
                 text_encoder.eval()
                 unet.eval()
                 loss = loss_step(batch, unet, vae, text_encoder, noise_scheduler, weight_dtype, args) 
-                if 'clip' in args.ti_reg_type:
+                if 'clip' in args.ti_reg_type :
                     clip_batch = next(clip_data_iterator)
                     instance_texts = clip_batch['text']
                     instance_images = [image for image in clip_batch['np_instance_image']]
-                    sim_loss = clip(instance_texts, instance_images) 
+                    
+                    sim_loss = clip_scorer(
+                        instance_texts,
+                        instance_images,
+                        mask_identifier_causal_attention = args.mask_identifier_causal_attention,
+                        ) 
+                    
                     print(f"clip similiraty {1 - sim_loss.detach().item()}")
-                    loss+= 0.001 * sim_loss
+                    if global_step > 10:
+                        loss+= 0.001 * sim_loss
 
                 accelerator.backward(loss)
                 optimizer_ti.step()

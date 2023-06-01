@@ -1,7 +1,7 @@
 #https://github.com/huggingface/diffusers/tree/main/examples/dreambooth
 export MODEL_NAME="runwayml/stable-diffusion-v1-5"
 export INSTANCE_DIR="custom_data/data/dog"
-export OUTPUT_DIR="lora_output/checkpoints/debug_decay_0.001"
+export OUTPUT_DIR="lora_output/checkpoints/debug_decay_mask_0.001"
 export CLASS_PRIOR_DIR="dataset/real_reg/samples_dog/dog" # prior preserving dataset dir
 export CLASS_CAPTION_DIR="dataset/real_reg/samples_dog/caption.txt" # caption of prior preserving dataset dir, e.g.: 
 # initializer_token_as_class:  use the class token as the initializer, e.g., "dog" -> "<krk> dog"
@@ -16,9 +16,10 @@ export CLASS_CAPTION_DIR="dataset/real_reg/samples_dog/caption.txt" # caption of
 # text_reg_loss_weight
 # reg_prompts: photo of a dog
 # scale_norm_reg: scale the norm reg loss accpording to the 1/SNR
+# mask_identifier_causal_attention: mask the identifier in the causal attention
 
 # accelerate launch
-CUDA_VISIBLE_DEVICES=0 python training_scripts/train_lora_w_ti.py \
+CUDA_VISIBLE_DEVICES=5 python training_scripts/train_lora_w_ti.py \
   --pretrained_model_name_or_path=$MODEL_NAME  \
   --instance_data_dir=$INSTANCE_DIR \
   --output_dir=$OUTPUT_DIR \
@@ -44,12 +45,13 @@ CUDA_VISIBLE_DEVICES=0 python training_scripts/train_lora_w_ti.py \
   --lora_rank=4 \
   --gradient_accumulation_steps=1 \
   --output_format=safe \
-  --mixed_precision=fp16 \
+  --mixed_precision=no \
   --filter_crossattn_str=cross+self \
   --norm_reg_loss_weight=0.001 \
   --text_reg_loss_weight=0.001 \
   --reg_prompts="photo of a dog" \
-  --ti_reg_type="decay" \
+  --ti_reg_type="decay+clip" \
+  --mask_identifier_causal_attention \
 
   # --stochastic_attribute="game character,3d render,4k,highres" # these attributes will be randomly appended to the prompts
   
