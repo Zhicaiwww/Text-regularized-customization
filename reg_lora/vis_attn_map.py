@@ -59,13 +59,14 @@ def add_attn_vis_hook(model, hook_name: str = None):
 
 # os.environ["DISABLE_TELEMETRY"] = 'YES'
 if __name__ == '__main__':
-    # python reg_lora/vis_attn_map.py --lora_path lora_output/checkpoints/debug_decay_mask_0.001/lora_weight_e12_s2000.safetensors --prompt "a <krk1> dog in grand canyon" --gpu 0 --name up_blocks.2.attentions.1.transformer_blocks.0.attn2
+    # python reg_lora/vis_attn_map.py --lora_path lora_output/checkpoints/output_dog_Ti-clip_norm/lora_weight_e49_s8000.safetensors --prompt "a <krk1> dog in grand canyon" --gpu 0 --name up_blocks.2.attentions.1.transformer_blocks.0.attn2 --save_tag 'decay'
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--lora_path', type=str, default=None)
     parser.add_argument('--prompt', type=str, default=None)
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--name', type=str, default='up_blocks.2.attentions.1.transformer_blocks.0.attn2')
+    parser.add_argument('--save_tag', type=str, default='')
 
     args = parser.parse_args()
     torch.manual_seed(0)
@@ -91,7 +92,7 @@ if __name__ == '__main__':
     del pipe_copy
     basename = '_'.join(args.lora_path.split("/")[-2:]).split('.')[0]
     prompt_name = args.prompt.replace(' ','_')
-    path = f'figures/attn_map/{prompt_name}_{basename}'
+    path = f'figures/attn_map/{prompt_name}_{basename}_{args.save_tag}'
     visualize_images(images,  nrow=1, outpath = path+'_ori_img', show=False, save=True,)
 
 

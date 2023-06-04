@@ -1128,7 +1128,8 @@ def main(args):
         unet,
         text_encoder,
         train_dataloader,
-    ) = accelerator.prepare(unet, text_encoder, train_dataloader)
+        clip_scorer,
+    ) = accelerator.prepare(unet, text_encoder, train_dataloader, clip_scorer if 'clip' in args.ti_reg_type else None)
 
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1227,6 +1228,7 @@ def main(args):
                             .norm(dim=-1, keepdim=True)
                         )
                         lambda_ = min(1.0, 100 * lr_scheduler_ti.get_last_lr()[0])
+                        
                         text_encoder.get_input_embeddings().weight[
                             index_updates
                         ] = F.normalize(
