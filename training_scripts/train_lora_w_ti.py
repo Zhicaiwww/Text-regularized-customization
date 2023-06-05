@@ -892,8 +892,6 @@ def main(args):
             tokenizer,
             placeholder_tokens = args.placeholder_token,
             class_token_len = len(class_token_ids),
-            device = accelerator.device,
-            weight_dtype = weight_dtype,
             )
         clip_dataset = CLIPTiDataset(
             instance_data_root=args.instance_data_dir,
@@ -1401,9 +1399,9 @@ def main(args):
                 "lr": lr_scheduler.get_last_lr()[0],
                 "placeholder_norm": current_norm.detach().item() if current_norm else 0.0,
             }
-            if global_step >= args.ti_train_step and args.enable_text_reg:
+            if global_step > args.ti_train_step and args.enable_text_reg:
                 logs["text_reg_loss"] = text_reg_loss.detach().item()
-            if global_step >= args.ti_train_step and args.enable_norm_reg:
+            if global_step > args.ti_train_step and args.enable_norm_reg:
                 logs["norm_reg_loss"] = norm_reg_loss.detach().item()
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)

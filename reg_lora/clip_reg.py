@@ -184,14 +184,14 @@ class CLIPTiDataset(Dataset):
         return example
 
 class CLIPTiScoreCalculator(nn.Module):
-    def __init__(self,text_model, tokenizer, placeholder_tokens, class_token_len, version='openai/clip-vit-large-patch14', device='cuda:0', weight_dtype = torch.float32) -> None:
+    def __init__(self,text_model, tokenizer, placeholder_tokens, class_token_len, version='openai/clip-vit-large-patch14') -> None:
         super().__init__()
         placeholder_tokens = placeholder_tokens.split('+')
         assert len(placeholder_tokens) == 1
         self.placeholder_token_id = tokenizer.convert_tokens_to_ids(placeholder_tokens)[0] # TODO multiple placeholder tokens
         self.class_token_len = class_token_len
 
-        self.model = CLIPModel.from_pretrained(version).to(device,dtype = weight_dtype)
+        self.model = CLIPModel.from_pretrained(version)
         self.processor = CLIPProcessor.from_pretrained(version)
 
         del self.model.text_model
@@ -199,16 +199,22 @@ class CLIPTiScoreCalculator(nn.Module):
         
         self.model.text_model  = text_model
         self.processor.tokenizer =  tokenizer
-        self.device = device
-        self.weight_dtype = weight_dtype
+
+    @property
+    def device(self):
+        return self.model.device
+
+    @property
+    def dtype(self):
+        return self.model.dtype
         
     def _get_text_features(self, input_ids, mask_identifier_causal_attention = False, output_attentions = False): 
 
         if mask_identifier_causal_attention:
             identifier_indices= torch.where(input_ids == self.placeholder_token_id)
-            causal_attention_mask = get_identifier_masked_causal_attention_mask(input_ids.size(0), 77 ,identifier_indices, class_token_len= self.class_token_len, dtype= self.weight_dtype).to(input_ids.device)
+            causal_attention_mask = get_identifier_masked_causal_attention_mask(input_ids.size(0), 77 ,identifier_indices, class_token_len= self.class_token_len, dtype= self.dtype).to(input_ids.device)
         else:
-            causal_attention_mask = build_causal_attention_mask(input_ids.size(0), 77, dtype= self.weight_dtype).to(input_ids.device)
+            causal_attention_mask = build_causal_attention_mask(input_ids.size(0), 77, dtype= self.dtype).to(input_ids.device)
 
         hidden_states = self.model.text_model.embeddings(input_ids=input_ids)
         outputs = self.model.text_model.encoder(
@@ -222,7 +228,7 @@ class CLIPTiScoreCalculator(nn.Module):
                     torch.arange(last_hidden_states.size(0), device=input_ids.device),
                     [(row == 49407).nonzero().min() for row in input_ids]
                     ]
-        text_embeds = self.model.text_projection(pooled_output.to(self.weight_dtype))
+        text_embeds = self.model.text_projection(pooled_output.to(self.dtype))
         output_attentions = None
         if output_attentions:
             output_attentions = outputs.attentions
@@ -236,7 +242,7 @@ class CLIPTiScoreCalculator(nn.Module):
             if isinstance(v, torch.LongTensor):
                 _inputs[k] = v.to(self.device)
             elif isinstance(v, torch.FloatTensor):
-                _inputs[k] = v.to(self.device,dtype = self.weight_dtype)
+                _inputs[k] = v.to(self.device,dtype = self.dtype)
 
         input_ids = _inputs.pop("input_ids")
         pixel_values = _inputs.pop("pixel_values") # not return attention mask
@@ -274,10 +280,14 @@ class CLIPTiScoreCalculator(nn.Module):
         Returns:
             _type_: _description_
         """
-        _,logits_per_text, text_embeds, image_embeds, _ = self.clip_forward(text, 
-                                    images,
-                                    mask_identifier_causal_attention = mask_identifier_causal_attention,
-                                    )
+        (
+            _,
+            logits_per_text,
+            text_embeds,
+            image_embeds,
+            _,
+         )= self.clip_forward(text, images, mask_identifier_causal_attention = mask_identifier_causal_attention, )
+
         if contrastive_loss: 
             loss = clip_loss(logits_per_text)
         else:
