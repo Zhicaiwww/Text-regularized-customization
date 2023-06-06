@@ -3,12 +3,14 @@ import os
 import copy
 import random
 from pathlib import Path
+import torch
+import sys
+sys.path.append(str(Path(__file__).parent.parent))
 
 import PIL
-import torch
 import numpy as np
 from PIL import Image
-from transformers import CLIPProcessor, CLIPModel, CLIPFeatureExtractor, CLIPTextModelWithProjection
+from transformers import CLIPTextModelWithProjection, CLIPTokenizer
 from transformers.models.clip.modeling_clip import clip_loss
 from torch.utils.data import Dataset, IterableDataset
 import torch.nn as nn
@@ -22,6 +24,9 @@ def _randomset(lis):
 
 def _shuffle(lis):
     return random.sample(lis, len(lis))
+IMAGENET_TEMPLATES_TINY = [
+    "a photo of a {}",
+]
 
 IMAGENET_TEMPLATES_SMALL = [
     "a photo of a {}",
@@ -120,67 +125,49 @@ def build_causal_attention_mask( bs, seq_len, dtype):
 
 class CLIPTiDataset(Dataset):
     def __init__(self,
-                 instance_data_root,
+                 reg_texts_file,
                  placeholder_tokens,
-                 class_token = None,
+                 class_token,
                  repeat = 2,
                  learnable_property = "style",
                  class_data_root = None,
                  contrastive_training = False,
                  stochastic_attribute = None,
+                 initializer_token_as_class = False,
                 ) -> None:
         super().__init__()
-        self.instance_data_root = Path(instance_data_root)
         self.placeholder_token = placeholder_tokens
-        self.instance_images_path = list(self.instance_data_root.iterdir())
-        self.num_instance_images = len(self.instance_images_path)
+
+        assert os.path.exists(reg_texts_file)
+        with open(reg_texts_file) as f:
+            self.templates = f.readlines()
+        self.templates = [t.strip() for t in self.templates]
+        self.num_templates = len(self.templates) 
+
         placeholder_tokens = ' '.join(placeholder_tokens.split('+'))
-        self.customized_token = placeholder_tokens + ' ' + class_token if class_token else placeholder_tokens
-        self.templates = (
-            IMAGENET_STYLE_TEMPLATES_SMALL
-            if learnable_property == "style"
-            else IMAGENET_TEMPLATES_SMALL
-        )
-        
+        self.class_token = class_token
+        self.customized_token = placeholder_tokens + ' ' + class_token if initializer_token_as_class else placeholder_tokens
+       
         self.contrastive_training = contrastive_training
-        self.contrastive_concepts = CONTRASTIVE_CONCEPT
-        self._length = self.num_instance_images
+        self._length = self.num_templates
         self.repeat = repeat
 
-        self.class_data_root = class_data_root #TODO
         self.stochastic_attribute = (
             stochastic_attribute.split(",") if stochastic_attribute else []
         )
 
+        self.sd_templates = IMAGENET_TEMPLATES_TINY
     def __len__(self):
-        return self._length if self.class_data_root is not None else self.repeat * self._length
+        return self._length if ~self.repeat else self.repeat * self._length
 
     def __getitem__(self, index) -> dict:
         example = {}
-        instance_image = Image.open(
-            self.instance_images_path[index % self.num_instance_images]
-        )
-        if not instance_image.mode == "RGB":
-            instance_image = instance_image.convert("RGB")
-        example["np_instance_image"] = np.array(instance_image)
-        
-        text = random.choice(self.templates).format(
-            ", ".join(
-                [self.customized_token]
-                + _shuffle(_randomset(self.stochastic_attribute))
-            )
-        )
-        example["text"] = text
-        example["contrastive_text"] = ""
 
-        if self.contrastive_training:
-            contrastive_text =  random.choice(self.templates).format(
-                ", ".join(
-                    [random.choice(self.contrastive_concepts)]
-                    + _shuffle(_randomset(self.stochastic_attribute))
-                )
-            )
-            example["contrastive_text"] = contrastive_text
+        reg_text  = random.choice(self.templates)
+        text = reg_text.replace(self.class_token, self.customized_token)
+        example["text"] = text
+        example["reg_text"] = reg_text
+
         return example
 
 class CLIPTiScoreCalculator(nn.Module):
@@ -191,14 +178,12 @@ class CLIPTiScoreCalculator(nn.Module):
         self.placeholder_token_id = tokenizer.convert_tokens_to_ids(placeholder_tokens)[0] # TODO multiple placeholder tokens
         self.class_token_len = class_token_len
 
-        self.model = CLIPModel.from_pretrained(version)
-        self.processor = CLIPProcessor.from_pretrained(version)
-
+        self.model = CLIPTextModelWithProjection.from_pretrained(version)
         del self.model.text_model
-        del self.processor.tokenizer
-        
         self.model.text_model  = text_model
-        self.processor.tokenizer =  tokenizer
+        self.tokenizer =  tokenizer
+    
+        self.logit_scale = torch.tensor([0.5],requires_grad=False)
 
     @property
     def device(self):
@@ -224,7 +209,7 @@ class CLIPTiScoreCalculator(nn.Module):
         )
         last_hidden_states =  outputs.last_hidden_state # this is used for controlling SD
         last_hidden_states = self.model.text_model.final_layer_norm(last_hidden_states)
-        # we added new token , so we need to find the last token of the input_ids
+        # we added new token, so we need to find the last token of the input_ids
         pooled_output = last_hidden_states[ 
                     torch.arange(last_hidden_states.size(0), device=input_ids.device),
                     [(row == 49407).nonzero().min() for row in input_ids]
@@ -235,70 +220,92 @@ class CLIPTiScoreCalculator(nn.Module):
             output_attentions = outputs.attentions
 
         return (text_embeds, output_attentions)
-    
-    def clip_forward(self, text, images, mask_identifier_causal_attention = False, output_attentions = False):
+
+    def _check_type(self, inputs):
+        if isinstance(inputs, torch.LongTensor):
+            inputs = inputs.to(self.device)
+        elif isinstance(inputs, torch.FloatTensor):
+            inputs = inputs.to(self.device,dtype = self.dtype)
+        return inputs
         
-        _inputs = self.processor(text=text, images=images,max_length=77,  return_tensors="pt", padding='max_length',truncation=True)
-        for k, v in _inputs.items():
-            if isinstance(v, torch.LongTensor):
-                _inputs[k] = v.to(self.device)
-            elif isinstance(v, torch.FloatTensor):
-                _inputs[k] = v.to(self.device,dtype = self.dtype)
-
-        input_ids = _inputs.pop("input_ids")
-        pixel_values = _inputs.pop("pixel_values") # not return attention mask
-
-        image_embeds = self.model.get_image_features(pixel_values = pixel_values)
+    def clip_text_forward(self, texts, reg_texts, mask_identifier_causal_attention = False, output_attentions = False):
+        input_ids = self.tokenizer(texts, return_tensors="pt", padding='max_length',truncation=True)['input_ids']
+        reg_input_ids = self.tokenizer(reg_texts, return_tensors="pt", padding='max_length',truncation=True)['input_ids']
+        
+        input_ids = self._check_type(input_ids)
+        reg_input_ids = self._check_type(reg_input_ids)
         
         text_embeds, output_text_attentions = self._get_text_features(input_ids,
                                                mask_identifier_causal_attention = mask_identifier_causal_attention,
                                                output_attentions = output_attentions)
         
-        image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
+        reg_text_embeds, output_reg_text_attentions = self._get_text_features(reg_input_ids,
+                                                  mask_identifier_causal_attention = mask_identifier_causal_attention,
+                                                    output_attentions = output_attentions)
         text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
+        reg_text_embeds = reg_text_embeds / reg_text_embeds.norm(p=2, dim=-1, keepdim=True)
 
         # cosine similarity as logits
-        logit_scale = self.model.logit_scale.exp().to(self.device, self.dtype)
-        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
-        logits_per_image = logits_per_text.t()
+        logit_scale = self.logit_scale.exp().to(self.device, self.dtype)
+        logits_per_text = torch.matmul(text_embeds, reg_text_embeds.t()) * logit_scale
+        logits_per_reg_text = logits_per_text.t()
 
         return (
-            logits_per_image,
+            logits_per_reg_text,
             logits_per_text,
             text_embeds,
-            image_embeds,
+            reg_text_embeds,
             output_text_attentions,
         )
         
-    def forward(self, text, images, mask_identifier_causal_attention = False, contrastive_loss = False ):
+    def forward(self, texts, reg_texts, mask_identifier_causal_attention = False, contrastive_loss = False ):
         """_summary_
 
         Args:
             text (List(str)): text with placeholder token.
-            images (List(np.numpy)): images to be cumtomized using text iversion.
+            reg_text (List(str)): text with no placeholder token. 
             mask_identifier_causal_attention (bool, optional): _description_. Defaults to False.
 
         Returns:
             _type_: _description_
         """
         (
-            _,
+            logits_per_reg_text,
             logits_per_text,
             text_embeds,
-            image_embeds,
-            _,
-         )= self.clip_forward(text, images, mask_identifier_causal_attention = mask_identifier_causal_attention, )
+            reg_text_embeds,
+            output_text_attentions,
+        ) = self.clip_text_forward(texts=texts,
+                                reg_texts=reg_texts,
+                                mask_identifier_causal_attention = mask_identifier_causal_attention,)
+        
 
         if contrastive_loss: 
             loss = clip_loss(logits_per_text)
+            print(logits_per_reg_text)
         else:
             text_embeds = text_embeds
-            image_embeds = image_embeds.detach()
+            reg_text_embeds = reg_text_embeds.detach()
             # simple mse loss
-            loss = 1 - torch.cosine_similarity(text_embeds, image_embeds).mean()
+            loss = 1 - torch.cosine_similarity(text_embeds, reg_text_embeds).mean()
         return loss
 
 # class CLIPTiScorer(nn.Module):
 #     def __init__(self) -> None:
 #         super().__init__() 
 
+if __name__ == "__main__":
+    dataset = CLIPTiDataset(reg_texts_file = "custom_data/data_reg/dog_reg.txt",
+                            placeholder_tokens = "<krk1>",
+                            class_token = "dog",
+                            repeat = 2,)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=3, shuffle=True, num_workers=0)
+    model = CLIPTextModelWithProjection.from_pretrained('openai/clip-vit-large-patch14')
+    tokenizer = CLIPTokenizer.from_pretrained('openai/clip-vit-large-patch14') 
+    clip = CLIPTiScoreCalculator(model.text_model, tokenizer, placeholder_tokens = "<krk1>", class_token_len = 1)
+    for batch in dataloader:
+        texts = batch['text']
+        reg_texts = batch['reg_text']
+        clip(texts, reg_texts, mask_identifier_causal_attention = False, contrastive_loss = True)
+
+        break

@@ -25,7 +25,7 @@ prompt_templates = ['photo of a placeholder',
 prompt_stype_templates = ['photo of a placeholder']
 
 if __name__  == '__main__':
-    #  python scripts_my/sample.py  --lora-path lora_output/checkpoints/NT-Decay --concept-name '<krk1> dog' --template concept --gpu 4 --seed 0 --n-per-prompt 4 --n-row 4
+    #  python scripts_my/sample.py  --lora-path lora_output/checkpoints/NT-clip-dog --concept-name '<krk1> dog' --template concept --gpu 2 --seed 0 --n-per-prompt 4 --n-row 4 
     parser = argparse.ArgumentParser()
     parser.add_argument('--lora-path', type=str, required=True, help = 'path to lora ckpt or dir')
     parser.add_argument('--concept-name', type=str, required=True)
@@ -73,7 +73,7 @@ if __name__  == '__main__':
             filter_crossattn_str = 'cross+self'
         )
         # pipe.unet
-        tune_lora_scale(pipe_copy.unet, 1)
+        tune_lora_scale(pipe_copy.unet, 0.2)
         tune_lora_scale(pipe_copy.text_encoder, 1)
 
         pipe_copy.text_encoder.text_model.to(device, dtype=weight_dtype)

@@ -48,7 +48,8 @@ from lora_diffusion import (
     filter_unet_to_norm_weights
 )
 # from lora_diffusion.xformers_utils import set_use_memory_efficient_attention_xformers
-from reg_lora.clip_reg import IMAGENET_TEMPLATES_SMALL, IMAGENET_STYLE_TEMPLATES_SMALL, CLIPTiDataset, CLIPTiScoreCalculator
+from reg_lora.clip_reg import IMAGENET_TEMPLATES_SMALL, IMAGENET_STYLE_TEMPLATES_SMALL
+from reg_lora.clip_ti_reg import CLIPTiDataset, CLIPTiScoreCalculator,  IMAGENET_TEMPLATES_TINY
 
 
 os.environ['DISABLE_TELEMETRY'] = 'YES'
@@ -675,6 +676,7 @@ def parse_args(input_args=None):
     parser.add_argument("--text_reg_loss_weight", type=float, default=0.01, help="text_reg_loss_weight")
     parser.add_argument("--reg_prompts", type = str, default=None, help="reg_prompts")
     parser.add_argument("--ti_reg_type", type = str, help="clip or")
+    parser.add_argument("--reg_texts_file", type = str, default=None, help="reg_texts_file")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -894,14 +896,15 @@ def main(args):
             class_token_len = len(class_token_ids),
             )
         clip_dataset = CLIPTiDataset(
-            instance_data_root=args.instance_data_dir,
+            reg_texts_file = args.reg_texts_file,
             placeholder_tokens=args.placeholder_token,
             stochastic_attribute=args.stochastic_attribute,
             learnable_property=args.learnable_property,
             class_data_root=args.class_data_dir if args.with_prior_preservation else None,
-            class_token = args.initializer_token if not args.initializer_token_as_class else None,
+            class_token = args.initializer_token,
+            initializer_token_as_class = args.initializer_token_as_class ,
         )
-        clip_dataloader = torch.utils.data.DataLoader(clip_dataset, batch_size=1, shuffle=False)
+        clip_dataloader = torch.utils.data.DataLoader(clip_dataset, batch_size=8, shuffle=True)
         clip_data_iterator = iter(clip_dataloader)
         clip_data_iterator = itertools.cycle(clip_data_iterator)        
         # instance_images = [torch.randn(3,512,512)]
@@ -1195,12 +1198,20 @@ def main(args):
                 if 'clip' in args.ti_reg_type :
                     clip_batch = next(clip_data_iterator)
                     instance_texts = clip_batch['text']
-                    instance_images = [image for image in clip_batch['np_instance_image']]
-                    
+                    # instance_images = [image for image in clip_batch['np_instance_image']]
+                    instance_reg_texts = clip_batch['reg_text'] 
+                    sd_template = random.choice(IMAGENET_TEMPLATES_TINY)
+                    sd_reg_text = sd_template.format(clip_dataset.class_token)
+                    sd_text = sd_template.format(clip_dataset.customized_token)
+
+                    instance_texts = [sd_text] + instance_texts
+                    instance_reg_texts = [sd_reg_text] + instance_reg_texts
+
                     sim_loss = clip_scorer(
                         instance_texts,
-                        instance_images,
+                        instance_reg_texts,
                         mask_identifier_causal_attention = args.mask_identifier_causal_attention,
+                        contrastive_loss = True,
                         ) 
                     
                     print(f"clip similiraty {1 - sim_loss.detach().item()}")
