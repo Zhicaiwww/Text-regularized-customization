@@ -1,8 +1,8 @@
 #https://github.com/huggingface/diffusers/tree/main/examples/dreambooth
 export MODEL_NAME="runwayml/stable-diffusion-v1-5"
-export INSTANCE_DIR="custom_data/data/dog"
-export OUTPUT_DIR="lora_output/checkpoints/clipTextImage_Init"
-export CLASS_PRIOR_DIR="dataset/real_reg/samples_dog/dog" # prior preserving dataset dir
+export INSTANCE_DIR="custom_data/data/cat"
+export OUTPUT_DIR="lora_output/checkpoints/cat_decay_Init"
+export CLASS_PRIOR_DIR="dataset/real_reg/samples_cat/cat" # prior preserving dataset dir
 export CLASS_CAPTION_DIR="dataset/real_reg/samples_dog/caption.txt" # caption of prior preserving dataset dir, e.g.: 
 # initializer_token_as_class:  use the class token as the initializer, e.g., "dog" -> "<krk> dog"
 # train_text_encoder: train the text encoder
@@ -19,12 +19,12 @@ export CLASS_CAPTION_DIR="dataset/real_reg/samples_dog/caption.txt" # caption of
 # mask_identifier_causal_attention: mask the identifier in the causal attention
 
 # accelerate launch
-CUDA_VISIBLE_DEVICES=5 python training_scripts/train_lora_w_ti.py \
+CUDA_VISIBLE_DEVICES=7 python training_scripts/train_lora_w_ti.py \
   --pretrained_model_name_or_path=$MODEL_NAME  \
   --instance_data_dir=$INSTANCE_DIR \
   --output_dir=$OUTPUT_DIR \
   --class_data_dir=$CLASS_PRIOR_DIR \
-  --class_prompt_or_file='photo of a dog' \
+  --class_prompt_or_file='photo of a cat' \
   --resolution=512 \
   --train_batch_size=1 \
   --learning_rate=1e-4 \
@@ -37,8 +37,8 @@ CUDA_VISIBLE_DEVICES=5 python training_scripts/train_lora_w_ti.py \
   --max_train_steps=2000 \
   --placeholder_token="<krk1>" \
   --learnable_property="object" \
-  --initializer_token="dog" \
-  --save_steps=20 \
+  --initializer_token="cat" \
+  --save_steps=100 \
   --resize=True \
   --center_crop \
   --scale_lr \
@@ -49,14 +49,11 @@ CUDA_VISIBLE_DEVICES=5 python training_scripts/train_lora_w_ti.py \
   --filter_crossattn_str=cross+self \
   --norm_reg_loss_weight=0.001 \
   --text_reg_loss_weight=0.001 \
-  --reg_prompts="photo of a dog" \
-  --ti_reg_type="text+image" \
+  --reg_prompts="photo of a cat" \
+  --ti_reg_type="decay" \
   --enable_norm_reg \
   --enable_text_reg \
-  --reg_texts_file="custom_data/data_reg/dog_reg.txt" \
-  --reg_images_root="custom_data/real_reg/samples_dog/dog" \
+  --reg_texts_file="custom_data/data_reg/cat_reg.txt" \
   --initializer_token_as_class \
-  # --mask_identifier_causal_attention \
-
   # --stochastic_attribute="game character,3d render,4k,highres" # these attributes will be randomly appended to the prompts
   

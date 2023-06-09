@@ -25,7 +25,8 @@ prompt_templates = ['photo of a placeholder',
 prompt_stype_templates = ['photo of a placeholder']
 
 if __name__  == '__main__':
-    #  python scripts_my/sample.py  --lora-path lora_output/checkpoints/NT-clip-dog --concept-name '<krk1> dog' --template concept --gpu 2 --seed 0 --n-per-prompt 4 --n-row 4 
+    #  python scripts_my/sample.py  --lora-path lora_output/checkpoints/cat_decay+clip_maskId/lora_weight_e10_s1100.safetensors --concept-name '<krk1> cat' --template concept --gpu 2 --seed 0 --n-per-prompt 4 --n-row 4 
+    # python scripts_my/sample.py  --lora-path lora_output/checkpoints/decay_maskId/lora_weight_e6_s1000.safetensors --concept-name 'dog' --template concept --gpu 2 --seed 0 --n-per-prompt 4 --n-row 4
     parser = argparse.ArgumentParser()
     parser.add_argument('--lora-path', type=str, required=True, help = 'path to lora ckpt or dir')
     parser.add_argument('--concept-name', type=str, required=True)

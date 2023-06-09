@@ -49,7 +49,7 @@ from lora_diffusion import (
 )
 # from lora_diffusion.xformers_utils import set_use_memory_efficient_attention_xformers
 from reg_lora.clip_reg import IMAGENET_TEMPLATES_SMALL, IMAGENET_STYLE_TEMPLATES_SMALL
-from reg_lora.clip_ti_reg import CLIPTiDataset, CLIPTiScoreCalculator,  IMAGENET_TEMPLATES_TINY
+from reg_lora.clip_ti_reg import CLIPTiDataset, CLIPTiScoreCalculator,  IMAGENET_TEMPLATES_TINY, CLIPTiTextModel
 
 
 os.environ['DISABLE_TELEMETRY'] = 'YES'
@@ -675,8 +675,10 @@ def parse_args(input_args=None):
     parser.add_argument("--norm_reg_loss_weight", type=float, default=0.01, help="norm_reg_loss_weight")
     parser.add_argument("--text_reg_loss_weight", type=float, default=0.01, help="text_reg_loss_weight")
     parser.add_argument("--reg_prompts", type = str, default=None, help="reg_prompts")
-    parser.add_argument("--ti_reg_type", type = str, help="clip or")
+    parser.add_argument("--no_decay", action="store_true", help="no_decay")
+    parser.add_argument("--ti_reg_type", type = str, default=None, help="text or image or text+image")
     parser.add_argument("--reg_texts_file", type = str, default=None, help="reg_texts_file")
+    parser.add_argument("--reg_images_root", type = str, default=None, help="reg_images_root")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -863,11 +865,16 @@ def main(args):
         
     placeholder_token_ids = tokenizer.convert_tokens_to_ids(placeholder_tokens)
     class_token_ids = tokenizer(args.initializer_token, truncation=False, add_special_tokens=False)["input_ids"]  if not args.initializer_token_as_class else []
+
     # Load models and create wrapper for stable diffusion
-    text_encoder = CLIPTextModel.from_pretrained(
+    text_encoder = CLIPTiTextModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="text_encoder",
         revision=args.revision,
+        mask_identifier_causal_attention = args.mask_identifier_causal_attention,
+        class_token_len = len(class_token_ids),
+        placeholder_token_id = placeholder_token_ids[0], # We only support on placeholder token for now
+
     )
 
     text_encoder.resize_token_embeddings(len(tokenizer))
@@ -887,28 +894,35 @@ def main(args):
     )
     unet.requires_grad_(False)
 
-    if 'clip' in args.ti_reg_type: 
+    if args.ti_reg_type is not None: 
 
+        def clip_collate_fn(batch):
+            collated_batch = {}
+            for key in batch[0].keys():
+                collated_batch[key] = [example[key] for example in batch]
+            # return list batch
+            return collated_batch
+        
         clip_scorer = CLIPTiScoreCalculator(
-            text_encoder.text_model,
+            text_encoder,
             tokenizer,
             placeholder_tokens = args.placeholder_token,
             class_token_len = len(class_token_ids),
+            mode = args.ti_reg_type
             )
         clip_dataset = CLIPTiDataset(
             reg_texts_file = args.reg_texts_file,
             placeholder_tokens=args.placeholder_token,
             stochastic_attribute=args.stochastic_attribute,
-            learnable_property=args.learnable_property,
-            class_data_root=args.class_data_dir if args.with_prior_preservation else None,
+            reg_images_root=args.reg_images_root if "image" in args.ti_reg_type else None,
             class_token = args.initializer_token,
+            repeat = 10,
             initializer_token_as_class = args.initializer_token_as_class ,
         )
-        clip_dataloader = torch.utils.data.DataLoader(clip_dataset, batch_size=8, shuffle=True)
+        
+        clip_dataloader = torch.utils.data.DataLoader(clip_dataset, collate_fn = clip_collate_fn,batch_size=8, shuffle=True)
         clip_data_iterator = iter(clip_dataloader)
         clip_data_iterator = itertools.cycle(clip_data_iterator)        
-        # instance_images = [torch.randn(3,512,512)]
-        # instance_texts = ['photo of <krk1> dog']
 
     if args.filter_crossattn_str == 'full':
         target_module = UNET_DEFAULT_TARGET_REPLACE
@@ -1130,7 +1144,7 @@ def main(args):
         text_encoder,
         train_dataloader,
         clip_scorer,
-    ) = accelerator.prepare(unet, text_encoder, train_dataloader, clip_scorer if 'clip' in args.ti_reg_type else None)
+    ) = accelerator.prepare(unet, text_encoder, train_dataloader, clip_scorer if 'text' in args.ti_reg_type else None)
 
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1195,28 +1209,41 @@ def main(args):
                 text_encoder.eval()
                 unet.eval()
                 loss = loss_step(batch, unet, vae, text_encoder, noise_scheduler, weight_dtype, args) 
-                if 'clip' in args.ti_reg_type :
+                if 'text' in args.ti_reg_type :
                     clip_batch = next(clip_data_iterator)
-                    instance_texts = clip_batch['text']
+                    texts = clip_batch['text']
+                    reg_texts = clip_batch['reg_text'] 
                     # instance_images = [image for image in clip_batch['np_instance_image']]
-                    instance_reg_texts = clip_batch['reg_text'] 
+                    
                     sd_template = random.choice(IMAGENET_TEMPLATES_TINY)
                     sd_reg_text = sd_template.format(clip_dataset.class_token)
                     sd_text = sd_template.format(clip_dataset.customized_token)
+                    instance_texts = [sd_text] + texts
+                    instance_reg_texts = [sd_reg_text] + reg_texts
 
-                    instance_texts = [sd_text] + instance_texts
-                    instance_reg_texts = [sd_reg_text] + instance_reg_texts
+                    instance_reg_images = None
+                    instance_texts_2 = None
+
+                    if 'image' in args.ti_reg_type :
+                        instance_image = Image.open( random.choice(train_dataset.instance_images_path )) 
+                        if not instance_image.mode == "RGB":
+                            instance_image = instance_image.convert("RGB")
+                        instance_reg_images = [instance_image] + clip_batch['reg_image']
+                        # We add sd_reg_text force it learn the different between "photo of a dog" and "photo of a <new> dog".  
+                        # Also remind clip_batch['reg_texts'] has no placeholder token.
+                        instance_texts_2 = [sd_text] + [sd_reg_text] + reg_texts 
+                    
 
                     sim_loss = clip_scorer(
-                        instance_texts,
-                        instance_reg_texts,
-                        mask_identifier_causal_attention = args.mask_identifier_causal_attention,
-                        contrastive_loss = True,
+                        texts1 = instance_texts,
+                        reg_texts = instance_reg_texts,
+                        texts2 = instance_texts_2,
+                        reg_images = instance_reg_images,
                         ) 
                     
-                    print(f"clip similiraty {1 - sim_loss.detach().item()}")
+                    print(f"sim_loss is {sim_loss.detach().item()}")
                     if global_step > 10:
-                        loss+= 0.001 * sim_loss
+                        loss+= 0.01 * sim_loss
 
                 accelerator.backward(loss)
                 optimizer_ti.step()
@@ -1327,14 +1354,7 @@ def main(args):
                         )
                         unwarp_text_encoder = accelerator.unwrap_model(text_encoder, **extra_args)
                         unwarp_unet = accelerator.unwrap_model(unet, **extra_args)
-                        # pipeline = StableDiffusionPipeline.from_pretrained(
-                        #     args.pretrained_model_name_or_path,
-                        #     unet=accelerator.unwrap_model(unet, **extra_args),
-                        #     text_encoder=accelerator.unwrap_model(
-                        #         text_encoder, **extra_args
-                        #     ),
-                        #     revision=args.revision,
-                        # )
+ 
                         
                         if args.output_format == "pt" or args.output_format == "both":
                             filename_unet = (
@@ -1376,35 +1396,41 @@ def main(args):
                                 loras, embeds, args.output_dir + f"/lora_weight_e{epoch}_s{global_step}.safetensors"
                             ) 
 
-                        for _up, _down in extract_lora_ups_down(unwarp_unet):
-                            print(
-                                "First Unet Layer's Up Weight is now : ",
-                                _up.weight.data,
-                            )
-                            print(
-                                "First Unet Layer's Down Weight is now : ",
-                                _down.weight.data,
-                            )
-                            break
+                        # for _up, _down in extract_lora_ups_down(unwarp_unet):
+                        #     print(
+                        #         "First Unet Layer's Up Weight is now : ",
+                        #         _up.weight.data,
+                        #     )
+                        #     print(
+                        #         "First Unet Layer's Down Weight is now : ",
+                        #         _down.weight.data,
+                        #     )
+                        #     break
 
-                        for _up, _down in extract_lora_ups_down(
-                            unwarp_text_encoder,
-                            target_replace_module=["CLIPAttention"],
-                        ):
-                            print(
-                                "First Text Encoder Layer's Up Weight is now : ",
-                                _up.weight.data,
-                            )
-                            print(
-                                "First Text Encoder Layer's Down Weight is now : ",
-                                _down.weight.data,
-                            )
-                            break
+                        # for _up, _down in extract_lora_ups_down(
+                        #     unwarp_text_encoder,
+                        #     target_replace_module=["CLIPAttention"],
+                        # ):
+                        #     print(
+                        #         "First Text Encoder Layer's Up Weight is now : ",
+                        #         _up.weight.data,
+                        #     )
+                        #     print(
+                        #         "First Text Encoder Layer's Down Weight is now : ",
+                        #         _down.weight.data,
+                        #     )
+                        #     break
 
   
 
                         last_save = global_step
 
+                    probe_prompts = ["a photo of a dog swimming in a pool","a photo of a <krk1> dog swimming in a pool"]
+                    input_ids = tokenizer(probe_prompts, padding="max_length", max_length=tokenizer.model_max_length, return_tensors="pt").input_ids
+                    global_eot_ids = [(row == 49407).nonzero().min() for row in input_ids]
+                    attentions = text_encoder(input_ids.to(text_encoder.device), output_attentions = True).attentions
+                    for attention in attentions:
+                        print(attention.mean(dim=1)[torch.arange(input_ids.size(0), device = text_encoder.device), global_eot_ids, :12].detach().cpu().numpy().round(2))
             logs = {
                 "loss": loss.detach().item(),
                 "lr": lr_scheduler.get_last_lr()[0],
