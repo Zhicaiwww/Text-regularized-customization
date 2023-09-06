@@ -51,7 +51,7 @@ def get_models(
     pretrained_vae_name_or_path,
     revision,
     placeholder_tokens: List[str],
-    class_tokenss: List[str],
+    initializer_tokens: List[str],
     device="cuda:0",
 ):
 
@@ -69,7 +69,7 @@ def get_models(
 
     placeholder_token_ids = []
 
-    for token, init_tok in zip(placeholder_tokens, class_tokenss):
+    for token, init_tok in zip(placeholder_tokens, initializer_tokens):
         num_added_tokens = tokenizer.add_tokens(token)
         if num_added_tokens == 0:
             raise ValueError(
@@ -101,12 +101,12 @@ def get_models(
             token_embeds[placeholder_token_id] = torch.zeros_like(token_embeds[0])
         else:
             token_ids = tokenizer.encode(init_tok, add_special_tokens=False)
-            # Check if class_tokens is a single token or a sequence of tokens
+            # Check if initializer_token is a single token or a sequence of tokens
             if len(token_ids) > 1:
                 raise ValueError("The initializer token must be a single token.")
 
-            class_tokens_id = token_ids[0]
-            token_embeds[placeholder_token_id] = token_embeds[class_tokens_id]
+            initializer_token_id = token_ids[0]
+            token_embeds[placeholder_token_id] = token_embeds[initializer_token_id]
 
     vae = AutoencoderKL.from_pretrained(
         pretrained_vae_name_or_path or pretrained_model_name_or_path,
@@ -705,7 +705,7 @@ def train(
     train_inpainting: bool = False,
     placeholder_tokens: str = "",
     placeholder_token_at_data: Optional[str] = None,
-    class_tokenss: Optional[str] = None,
+    initializer_tokens: Optional[str] = None,
     seed: int = 42,
     resolution: int = 512,
     color_jitter: bool = True,
@@ -765,7 +765,7 @@ def train(
 
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
-    # print(placeholder_tokens, class_tokenss)
+    # print(placeholder_tokens, initializer_tokens)
     if len(placeholder_tokens) == 0:
         placeholder_tokens = []
         print("PTI : Placeholder Tokens not given, using null token")
@@ -776,19 +776,19 @@ def train(
             sorted(placeholder_tokens) == placeholder_tokens
         ), f"Placeholder tokens should be sorted. Use something like {'|'.join(sorted(placeholder_tokens))}'"
 
-    if class_tokenss is None:
+    if initializer_tokens is None:
         print("PTI : Initializer Tokens not given, doing random inits")
-        class_tokenss = ["<rand-0.017>"] * len(placeholder_tokens)
+        initializer_tokens = ["<rand-0.017>"] * len(placeholder_tokens)
     else:
-        class_tokenss = class_tokenss.split("|")
+        initializer_tokens = initializer_tokens.split("|")
 
-    assert len(class_tokenss) == len(
+    assert len(initializer_tokens) == len(
         placeholder_tokens
     ), "Unequal Initializer token for Placeholder tokens."
 
     if proxy_token is not None:
         class_token = proxy_token
-    class_token = "".join(class_tokenss)
+    class_token = "".join(initializer_tokens)
 
     if placeholder_token_at_data is not None:
         tok, pat = placeholder_token_at_data.split("|")
@@ -798,7 +798,7 @@ def train(
         token_map = {"DUMMY": "".join(placeholder_tokens)}
 
     print("PTI : Placeholder Tokens", placeholder_tokens)
-    print("PTI : Initializer Tokens", class_tokenss)
+    print("PTI : Initializer Tokens", initializer_tokens)
 
     # get the models
     text_encoder, vae, unet, tokenizer, placeholder_token_ids = get_models(
@@ -806,7 +806,7 @@ def train(
         pretrained_vae_name_or_path,
         revision,
         placeholder_tokens,
-        class_tokenss,
+        initializer_tokens,
         device=device,
     )
 

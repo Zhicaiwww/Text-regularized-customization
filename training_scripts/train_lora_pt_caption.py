@@ -465,7 +465,7 @@ def parse_args(input_args=None):
         help="Conecpt to learn : style or object?",
     )
     parser.add_argument(
-        "--initializer_token",
+        "--class_tokens",
         type=str,
         default=None,
         required=True,
@@ -621,13 +621,13 @@ def main(args):
             " `placeholder_token` that is not already in the tokenizer."
         )
 
-    # Convert the initializer_token, placeholder_token to ids
-    token_ids = tokenizer.encode(args.initializer_token, add_special_tokens=False)
-    # Check if initializer_token is a single token or a sequence of tokens
+    # Convert the class_tokens, placeholder_token to ids
+    token_ids = tokenizer.encode(args.class_tokens, add_special_tokens=False)
+    # Check if class_tokens is a single token or a sequence of tokens
     if len(token_ids) > 1:
         raise ValueError("The initializer token must be a single token.")
 
-    initializer_token_id = token_ids[0]
+    class_tokens_id = token_ids[0]
     placeholder_token_id = tokenizer.convert_tokens_to_ids(args.placeholder_token)
 
     # Load models and create wrapper for stable diffusion
@@ -640,7 +640,7 @@ def main(args):
     text_encoder.resize_token_embeddings(len(tokenizer))
     # Initialise the newly added placeholder token with the embeddings of the initializer token
     token_embeds = text_encoder.get_input_embeddings().weight.data
-    token_embeds[placeholder_token_id] = token_embeds[initializer_token_id]
+    token_embeds[placeholder_token_id] = token_embeds[class_tokens_id]
 
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_vae_name_or_path or args.pretrained_model_name_or_path,

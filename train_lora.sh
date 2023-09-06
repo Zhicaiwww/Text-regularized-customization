@@ -27,6 +27,6 @@ lora_pti \
   --weight_decay_lora=10\
   --continue_inversion \
   --continue_inversion_lr=1e-4 \
-  --device="cuda:2" \
+  --device="cuda:7" \
   --lora_rank=1 \
   --train_text_encoder \

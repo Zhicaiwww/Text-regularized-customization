@@ -5,11 +5,13 @@ __pycache__
 __test*
 merged_lora*
 wandb
+evaluations
 exps*
 .vscode
 build
 lora_diffusion.egg-info
 *.out
 figures/
+src/
 example_loras*
 

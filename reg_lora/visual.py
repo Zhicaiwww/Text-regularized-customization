@@ -6,6 +6,7 @@ import numpy as np
 from einops import rearrange
 import os
 from lora_diffusion import tune_lora_scale, patch_pipe
+from typing import Union, List, Tuple, Optional, Callable, Any, Dict, TypeVar, Generic
 import matplotlib.pyplot as plt
 from lora_diffusion.lora import _find_modules,DEFAULT_TARGET_REPLACE,LoraInjectedLinear
 from torchvision.utils import make_grid
@@ -52,7 +53,11 @@ def visual_unet_scales(pipe,prompt = 'a <krk> dog in grand canyon',type:str = 'c
     print(f"finished tuned lora scales in unet {type} attention within {scales}")
     return images
 
-def visualize_images(images,nrow=4, show = False,save = True,outpath=None):
+def visualize_images(images: List[Union[Image.Image, torch.Tensor, np.ndarray]],
+                     nrow: int = 4,
+                     show = False,
+                     save = True,
+                     outpath=None):
 
     if isinstance(images[0],Image.Image):
         transform = transforms.ToTensor()
@@ -77,6 +82,5 @@ def visualize_images(images,nrow=4, show = False,save = True,outpath=None):
         assert outpath is not None
         if os.path.dirname(outpath) and not os.path.exists(os.path.dirname(outpath)):
             os.makedirs(os.path.dirname(outpath),exist_ok=True)
-        img.save(f'{outpath}.jpg')
-
-        
+        img.save(f'{outpath}')
+    return img 

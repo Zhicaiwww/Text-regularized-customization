@@ -10,46 +10,12 @@ from transformers import (
 )
 
 from diffusers import StableDiffusionPipeline
-from .lora import patch_pipe, tune_lora_scale, _text_lora_path, _ti_lora_path
+from lora_diffusion.lora import patch_pipe, tune_lora_scale, _text_lora_path, _ti_lora_path
+from utils import is_object_class, OBJECT_PROMPT_LIST, LIVE_SUBJECT_PROMPT_LIST
 import os
 import glob
 import math
-
-EXAMPLE_PROMPTS = [
-    "<obj> swimming in a pool",
-    "<obj> at a beach with a view of seashore",
-    "<obj> in times square",
-    "<obj> wearing sunglasses",
-    "<obj> in a construction outfit",
-    "<obj> playing with a ball",
-    "<obj> wearing headphones",
-    "<obj> oil painting ghibli inspired",
-    "<obj> working on the laptop",
-    "<obj> with mountains and sunset in background",
-    "Painting of <obj> at a beach by artist claude monet",
-    "<obj> digital painting 3d render geometric style",
-    "A screaming <obj>",
-    "A depressed <obj>",
-    "A sleeping <obj>",
-    "A sad <obj>",
-    "A joyous <obj>",
-    "A frowning <obj>",
-    "A sculpture of <obj>",
-    "<obj> near a pool",
-    "<obj> at a beach with a view of seashore",
-    "<obj> in a garden",
-    "<obj> in grand canyon",
-    "<obj> floating in ocean",
-    "<obj> and an armchair",
-    "A maple tree on the side of <obj>",
-    "<obj> and an orange sofa",
-    "<obj> with chocolate cake on it",
-    "<obj> with a vase of rose flowers on it",
-    "A digital illustration of <obj>",
-    "Georgia O'Keeffe style <obj> painting",
-    "A watercolor painting of <obj> on a beach",
-]
-
+import random
 
 def image_grid(_imgs, rows=None, cols=None):
 
@@ -115,6 +81,7 @@ def evaluate_pipe(
     class_token: str = "",
     learnt_token: str = "",
     guidance_scale: float = 5.0,
+    
     seed=0,
     clip_model_sets=None,
     eval_clip_id: str = "openai/clip-vit-large-patch14",
@@ -129,18 +96,20 @@ def evaluate_pipe(
             eval_clip_id
         )
 
-    images = []
+    # images = []
     img_embeds = []
     text_embeds = []
-
-    for prompt in EXAMPLE_PROMPTS[:n_test]:
+    example_templates = OBJECT_PROMPT_LIST if is_object_class(class_token) else LIVE_SUBJECT_PROMPT_LIST
+    example_templates = example_templates * 20
+    random.shuffle(example_templates)
+    for prompt in example_templates[:n_test]:
         prompt = prompt.replace("<placeholder>", learnt_token)
         torch.manual_seed(seed)
         with torch.autocast("cuda"):
             img = pipe(
                 prompt, num_inference_steps=n_step, guidance_scale=guidance_scale
             ).images[0]
-        images.append(img)
+        # images.append(img)
 
         # image
         inputs = processor(images=img, return_tensors="pt")

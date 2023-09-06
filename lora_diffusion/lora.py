@@ -51,9 +51,7 @@ class LoraInjectedLinear(nn.Module):
         nn.init.zeros_(self.lora_up.weight)
 
     def forward(self, input):
-        if hasattr(self, 'input_detach'):
-            del self.input_detach
-        self.input_detach = input.detach()
+
         return (
             self.linear(input)
             + self.dropout(self.lora_up(self.selector(self.lora_down(input))))
@@ -65,12 +63,27 @@ class LoraInjectedLinear(nn.Module):
    
     def get_reg_loss(self,reg_vector = None):
         if reg_vector is None:
-            # L2 norm of the weight matrix
-            lora_project_vector = self.lora_up(self.lora_down(self.input_detach))
-            return torch.norm(lora_project_vector, dim =[1,2],p = 2)
+            if hasattr(self, 'fisher'):
+                weight_reg = (self.lora_up.weight.pow(2) * self.fisher).mean()
+            else: 
+                # L2 norm of the weight matrix
+                weight_reg = self.lora_up.weight.pow(2).mean()
+            return weight_reg
         else:
             lora_project_vector = self.lora_up(self.lora_down(reg_vector))
-            return torch.norm(lora_project_vector, dim =[1,2], p = 2)
+            return torch.norm(lora_project_vector, dim =[1,2], p = 2).mean()
+        
+    def update_fisher(self):
+        # update fisher information of lora-up matrix
+        # TODO
+        if not hasattr(self,'fisher'):
+            self._fisher_steps = 1
+            # self.fisher = 
+            setattr(self,'fisher',self.lora_up.weight.grad.detach().pow(2))
+        else:
+            self._fisher_steps += 1
+            _a = self._fisher_steps
+            self.fisher = self.fisher*((_a-1)/_a) + self.lora_up.weight.grad.detach().pow(2)*(1/_a)
 
     def set_selector_from_diag(self, diag: torch.Tensor):
         # diag is a 1D tensor of size (r,)
@@ -305,7 +318,9 @@ def _find_modules_v3(
                 ):
                     continue
                 # Otherwise, yield it
+                # parent.get_submodule(name) == module
                 yield parent, name, module
+
 
 
 def _find_modules_old(
@@ -336,6 +351,7 @@ def inject_trainable_lora(
     verbose: bool = False,
     dropout_p: float = 0.0,
     scale: float = 1.0,
+    freeze_down_lora: bool = False,
     **kwargs,
 ):
     """
@@ -373,14 +389,15 @@ def inject_trainable_lora(
         _module._modules[name] = _tmp
 
         require_grad_params.append(_module._modules[name].lora_up.parameters())
-        require_grad_params.append(_module._modules[name].lora_down.parameters())
+        if not freeze_down_lora:
+            require_grad_params.append(_module._modules[name].lora_down.parameters())
 
         if loras != None:
             _module._modules[name].lora_up.weight = loras.pop(0)
             _module._modules[name].lora_down.weight = loras.pop(0)
 
         _module._modules[name].lora_up.weight.requires_grad = True
-        _module._modules[name].lora_down.weight.requires_grad = True
+        _module._modules[name].lora_down.weight.requires_grad = True if not freeze_down_lora else False
         names.append(name)
 
     return require_grad_params, names
@@ -466,10 +483,19 @@ def filter_unet_to_norm_weights(unet, target_replace_module=UNET_CROSSATTN_TARGE
         }
     """
 
-    _child_modules = [_child_module for _,_,_child_module in 
-                      _find_modules(unet, target_replace_module, search_class=[LoraInjectedLinear, LoraInjectedConv2d])]
-    _child_cross_project_modules = [_child_module for _,_,_child_module in
-                                    _find_modules(unet, target_replace_module, search_class=[LoraInjectedLinear],filter_crossattn_str='cross')]
+    _child_modules = [_child_module for _,_,_child_module in\
+                                 _find_modules(
+                                        unet,
+                                        target_replace_module,
+                                        search_class=[LoraInjectedLinear, LoraInjectedConv2d])
+                      ]
+    _child_cross_project_modules = [_child_module for _,_,_child_module in \
+                                            _find_modules(
+                                                unet,
+                                                target_replace_module,
+                                                search_class=[LoraInjectedLinear],
+                                                filter_crossattn_str='cross')
+                                ]
 
     _child_other_lora_modules = list(set(_child_modules) - set(_child_cross_project_modules)) 
 

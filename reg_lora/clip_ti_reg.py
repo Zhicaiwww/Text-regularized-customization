@@ -188,7 +188,7 @@ class CLIPTiTextTransformer(CLIPTextTransformer):
 
         hidden_states = self.embeddings(input_ids=input_ids, position_ids=position_ids)
 
-        bsz, seq_len = input_shape
+        bsz, seq_len = input_ids.size()
         
         if self.mask_identifier_causal_attention:
             identifier_indices= torch.where(input_ids == self.placeholder_token_id)
@@ -243,17 +243,13 @@ class CLIPTiTextModel(CLIPTextModel):
 
 class CLIPTiDataset(Dataset):
     def __init__(self,
-                 
                  reg_texts_file, # files that include the reg texts
-                 placeholder_tokens, # e.g. <krk1>
+                 custom_token, # e.g. <krk1>
                  class_token, # e.g. dog
                  repeat = 10,
                  reg_images_root = None, # if not None, the images will be sampled from the class_data_root
-                 stochastic_attribute = None,
-                 initializer_token_as_class = False,
                 ) -> None:
         super().__init__()
-        self.placeholder_token = placeholder_tokens
 
         assert os.path.exists(reg_texts_file)
         with open(reg_texts_file) as f:
@@ -262,9 +258,8 @@ class CLIPTiDataset(Dataset):
         self.templates = [t.strip() for t in self.templates]
         self.num_templates = len(self.templates) 
 
-        placeholder_tokens = ' '.join(placeholder_tokens.split('+'))
         self.class_token = class_token
-        self.customized_token = placeholder_tokens + ' ' + class_token if not initializer_token_as_class else placeholder_tokens
+        self.custom_token = custom_token
        
         self._length = self.num_templates
         self.repeat = repeat
@@ -274,10 +269,6 @@ class CLIPTiDataset(Dataset):
             self.reg_images_path = list(Path(self.reg_images_root).iterdir())
             self.num_reg_images = len(self.reg_images_path)
             
-        self.stochastic_attribute = (
-            stochastic_attribute.split(",") if stochastic_attribute else []
-        )
-
     def __len__(self):
         return self.repeat * self._length
 
@@ -285,7 +276,7 @@ class CLIPTiDataset(Dataset):
         
         example = {}
         reg_text  = self.templates[index % self.num_templates]
-        text = reg_text.replace(self.class_token, self.customized_token)
+        text = reg_text.replace(self.class_token, self.custom_token)
         example["text"] = text
         example["reg_text"] = reg_text
 
@@ -302,17 +293,11 @@ class CLIPTiScoreCalculator(nn.Module):
     def __init__(self,
                 text_model: CLIPTiTextModel, 
                 tokenizer: CLIPTokenizer,
-                placeholder_tokens: str,
-                class_token_len: int = -1,   
                 mode = 'text',
                 version='openai/clip-vit-large-patch14',) -> None:
         super().__init__()
 
         # TODO multiple placeholder tokens
-        placeholder_tokens = placeholder_tokens.split('+')
-        assert len(placeholder_tokens) == 1
-        self.placeholder_token_id = tokenizer.convert_tokens_to_ids(placeholder_tokens)[0]
-        self.class_token_len = class_token_len
 
         # self.text_model = CLIPTextModelWithProjection.from_pretrained(version)
         self.model = CLIPModel.from_pretrained(version)
@@ -414,7 +399,7 @@ class CLIPTiScoreCalculator(nn.Module):
 
 if __name__ == "__main__":
     dataset = CLIPTiDataset(reg_texts_file = "custom_data/data_reg/dog_reg.txt",
-                            placeholder_tokens = "<krk1>",
+                            placeholder_token = "<krk1>",
                             class_token = "dog",
                             repeat = 2,)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=3, shuffle=True, num_workers=0)
@@ -424,7 +409,7 @@ if __name__ == "__main__":
                                              class_token_len = 1)
     tokenizer = CLIPProcessor.from_pretrained('openai/clip-vit-large-patch14').tokenizer
  
-    clip = CLIPTiScoreCalculator(model, tokenizer, placeholder_tokens = "<krk1>", class_token_len = 1)
+    clip = CLIPTiScoreCalculator(model, tokenizer, placeholder_token = "<krk1>", class_token_len = 1)
     for batch in dataloader:
         texts = batch['text']
         reg_texts = batch['reg_text']

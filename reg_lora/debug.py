@@ -13,7 +13,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import sys
-sys.path.append('/home/zhicai/poseVideo/Text-regularized-customization/')
 from lora_diffusion import LoraInjectedConv2d, LoraInjectedLinear, patch_pipe, tune_lora_scale
 from lora_diffusion.lora import _find_modules, UNET_CROSSATTN_TARGET_REPLACE
 from reg_lora.visual import visualize_images
@@ -32,7 +31,7 @@ torch.manual_seed(0)
 
 # image  # nice. diffusers are cool.
 
-lora_ckpt = 'lora_output/checkpoints/output_dog_Ti-clip_Nonorm_3e-5/lora_weight_e6_s1000.safetensors'
+lora_ckpt = 'outputs/checkpoints/output_dog_Ti-clip_Nonorm_3e-5/lora_weight_e6_s1000.safetensors'
 torch.manual_seed(0)
 
 patch_pipe(
