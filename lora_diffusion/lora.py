@@ -1,4 +1,4 @@
-import json
+import json, sys, pdb
 import math
 from itertools import groupby
 from typing import Callable, Dict, List, Optional, Set, Tuple, Type, Union
@@ -191,7 +191,7 @@ TEXT_ENCODER_DEFAULT_TARGET_REPLACE = {"CLIPAttention"}
 
 TEXT_ENCODER_EXTENDED_TARGET_REPLACE = {"CLIPAttention"}
 
-DEFAULT_TARGET_REPLACE = UNET_DEFAULT_TARGET_REPLACE
+DEFAULT_TARGET_REPLACE = UNET_CROSSATTN_TARGET_REPLACE
 
 EMBED_FLAG = "<embed>"
 
@@ -298,12 +298,22 @@ def _find_modules_v3(
                         pass
                     else:
                         continue
-                if filter_crossattn_str == 'cross' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
+                elif filter_crossattn_str == 'cross' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
                     if 'attn2.to_k' in fullname or 'attn2.to_v' in fullname:
                         pass
                     else:
                         continue
-                if filter_crossattn_str == 'self' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
+                elif filter_crossattn_str == 'cross-k' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
+                    if 'attn2.to_k' in fullname:
+                        pass
+                    else:
+                        continue
+                elif filter_crossattn_str == 'cross-v' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
+                    if 'attn2.to_v' in fullname:
+                        pass
+                    else:
+                        continue
+                elif filter_crossattn_str == 'self' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
                     if 'attn1.to_k' in fullname or 'attn1.to_v' in fullname:
                         pass
                     else:
@@ -483,25 +493,45 @@ def filter_unet_to_norm_weights(unet, target_replace_module=UNET_CROSSATTN_TARGE
         }
     """
 
-    _child_modules = [_child_module for _,_,_child_module in\
-                                 _find_modules(
+    child_modules = [_child_module for _,_,_child_module in \
+                                    _find_modules(
                                         unet,
                                         target_replace_module,
                                         search_class=[LoraInjectedLinear, LoraInjectedConv2d])
-                      ]
-    _child_cross_project_modules = [_child_module for _,_,_child_module in \
+    ]
+    child_cross_project_k_modules = [_child_module for _,_,_child_module in \
                                             _find_modules(
                                                 unet,
                                                 target_replace_module,
                                                 search_class=[LoraInjectedLinear],
-                                                filter_crossattn_str='cross')
-                                ]
+                                                filter_crossattn_str='cross-k')
+    ]
+    child_cross_project_v_modules = [_child_module for _,_,_child_module in \
+                                            _find_modules(
+                                                unet,
+                                                target_replace_module,
+                                                search_class=[LoraInjectedLinear],
+                                                filter_crossattn_str='cross-v')
+    ]
 
-    _child_other_lora_modules = list(set(_child_modules) - set(_child_cross_project_modules)) 
+    lox_modules = [_child_module for _,_,_child_module in \
+                                            _find_modules(
+                                                unet,
+                                                target_replace_module,
+                                                search_class=[nn.Linear, LoraInjectedLinear],
+                                                filter_crossattn_str='cross'
+                                                )
+    ]
+
+    child_cross_project_modules = child_cross_project_k_modules + child_cross_project_v_modules
+    child_other_lora_modules = list(set(child_modules) - set(child_cross_project_modules)) 
 
     filter_result = {
-        "cross_project_loras": _child_cross_project_modules,
-        "other_loras": _child_other_lora_modules,
+        "cross_project_loras": child_cross_project_modules,
+        "cross_project_k_loras": child_cross_project_k_modules,
+        "cross_project_v_loras": child_cross_project_v_modules,
+        "lox_loras": lox_modules,
+        "other_loras": child_other_lora_modules,
     }
     return filter_result
 
@@ -577,6 +607,8 @@ def save_safeloras_with_embeds(
     modelmap: Dict[str, Tuple[nn.Module, Set[str]]] = {},
     embeds: Dict[str, torch.Tensor] = {},
     outpath="./lora.safetensors",
+    tok_dict=None,
+    loras_unet_prev=None,
 ):
     """
     Saves the Lora from multiple modules in a single safetensor file.
@@ -597,12 +629,17 @@ def save_safeloras_with_embeds(
             rank = _down.shape[0]
 
             metadata[f"{name}:{i}:rank"] = str(rank)
-            weights[f"{name}:{i}:up"] = _up
-            weights[f"{name}:{i}:down"] = _down
+            weights[f"{name}:{i}:up"] = _up + loras_unet_prev[2*i].to(_up.device) if (loras_unet_prev is not None) and (name == "unet") else _up
+            weights[f"{name}:{i}:down"] = _down + loras_unet_prev[2*i+1].to(_down.device) if (loras_unet_prev is not None) and (name == "unet") else _down
 
     for token, tensor in embeds.items():
         metadata[token] = EMBED_FLAG
         weights[token] = tensor
+
+    if tok_dict is not None:
+        for token, tensor in tok_dict.items():
+            metadata[token] = EMBED_FLAG
+            weights[token] = tensor
 
     print(f"Saving weights to {outpath}")
     safe_save(weights, outpath, metadata)
@@ -845,15 +882,16 @@ def monkeypatch_or_replace_lora_extended(
     target_replace_module=DEFAULT_TARGET_REPLACE,
     r: Union[int, List[int]] = 4,
     **kwargs,
-):
+    ):
+
     for _module, name, _child_module in _find_modules(
         model,
         target_replace_module,
-        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d],**kwargs,
-    ):
-        if (_child_module.__class__ == nn.Linear) or (
-            _child_module.__class__ == LoraInjectedLinear
+        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d], **kwargs,
         ):
+
+        if (_child_module.__class__ == nn.Linear) or (_child_module.__class__ == LoraInjectedLinear):
+
             if len(loras[0].shape) != 2:
                 continue
 
@@ -876,9 +914,8 @@ def monkeypatch_or_replace_lora_extended(
             if bias is not None:
                 _tmp.linear.bias = bias
 
-        elif (_child_module.__class__ == nn.Conv2d) or (
-            _child_module.__class__ == LoraInjectedConv2d
-        ):
+        elif (_child_module.__class__ == nn.Conv2d) or (_child_module.__class__ == LoraInjectedConv2d):
+
             if len(loras[0].shape) != 4:
                 continue
             _source = (
@@ -922,7 +959,25 @@ def monkeypatch_or_replace_lora_extended(
         _module._modules[name].to(weight.device)
 
 
-def monkeypatch_or_replace_safeloras(models, safeloras,**kwargs):
+def add_lora_params_to_model_by_lox(
+    model,
+    loras,
+    target_replace_module=DEFAULT_TARGET_REPLACE,
+    r: Union[int, List[int]] = 4,
+    **kwargs,
+    ):
+
+    for _module, name, _child_module in _find_modules(
+        model,
+        target_replace_module,
+        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d], **kwargs,
+        ):
+        
+        lora_prev = torch.matmul(loras.pop(0), loras.pop(0))
+        _module._modules[name].weight.data += lora_prev
+
+
+def monkeypatch_or_replace_safeloras(models, safeloras, **kwargs):
     loras = parse_safeloras(safeloras)
 
     for name, (lora, ranks, target) in loras.items():
@@ -931,8 +986,7 @@ def monkeypatch_or_replace_safeloras(models, safeloras,**kwargs):
         if not model:
             print(f"No model provided for {name}, contained in Lora")
             continue
-
-        monkeypatch_or_replace_lora_extended(model, lora, target, ranks,**kwargs)
+        monkeypatch_or_replace_lora_extended(model, lora, target, ranks, **kwargs)
 
 
 def monkeypatch_remove_lora(model):
@@ -1040,15 +1094,12 @@ def apply_learned_embed_in_clip(
         trained_tokens = list(learned_embeds.keys())
 
     for token in trained_tokens:
-        print(token)
-        embeds = learned_embeds[token]
 
-        # cast to dtype of text_encoder
         dtype = text_encoder.get_input_embeddings().weight.dtype
         num_added_tokens = tokenizer.add_tokens(token)
 
-        i = 1
         if not idempotent:
+            i = 1
             while num_added_tokens == 0:
                 print(f"The tokenizer already contains the token {token}.")
                 token = f"{token[:-1]}-{i}>"
@@ -1064,7 +1115,8 @@ def apply_learned_embed_in_clip(
 
         # get the id for the token and assign the embeds
         token_id = tokenizer.convert_tokens_to_ids(token)
-        text_encoder.get_input_embeddings().weight.data[token_id] = embeds
+        text_encoder.get_input_embeddings().weight.data[token_id] = learned_embeds[token]
+
     return token
 
 
@@ -1093,7 +1145,7 @@ def patch_pipe(
     unet_target_replace_module=DEFAULT_TARGET_REPLACE,
     text_target_replace_module=TEXT_ENCODER_DEFAULT_TARGET_REPLACE,
     **kwargs,
-):
+    ):
     if maybe_unet_path.endswith(".pt"):
         # torch format
 
@@ -1137,7 +1189,7 @@ def patch_pipe(
     elif maybe_unet_path.endswith(".safetensors"):
         safeloras = safe_open(maybe_unet_path, framework="pt", device="cpu")
 
-        monkeypatch_or_replace_safeloras(pipe, safeloras,**kwargs)
+        monkeypatch_or_replace_safeloras(pipe, safeloras, **kwargs)
         tok_dict = parse_safeloras_embeds(safeloras)
         if patch_ti:
             apply_learned_embed_in_clip(

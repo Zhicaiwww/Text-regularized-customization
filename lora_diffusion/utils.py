@@ -100,7 +100,7 @@ def text_img_alignment(img_embeds, text_embeds, target_img_embeds):
     }
 
 
-def prepare_clip_model_sets(eval_clip_id: str = "openai/clip-vit-large-patch14"):
+def prepare_clip_model_sets(eval_clip_id: str = "models/clip-vit-large-patch14"):
     text_model = CLIPTextModelWithProjection.from_pretrained(eval_clip_id)
     tokenizer = CLIPTokenizer.from_pretrained(eval_clip_id)
     vis_model = CLIPVisionModelWithProjection.from_pretrained(eval_clip_id)
@@ -117,7 +117,7 @@ def evaluate_pipe(
     guidance_scale: float = 5.0,
     seed=0,
     clip_model_sets=None,
-    eval_clip_id: str = "openai/clip-vit-large-patch14",
+    eval_clip_id: str = "models/clip-vit-large-patch14",
     n_test: int = 10,
     n_step: int = 50,
 ):
@@ -167,7 +167,7 @@ def evaluate_pipe(
 def visualize_progress(
     path_alls: Union[str, List[str]],
     prompt: str,
-    model_id: str = "runwayml/stable-diffusion-v1-5",
+    model_id: str = "models/stable-diffusion-v1-5",
     device="cuda:0",
     patch_unet=True,
     patch_text=True,

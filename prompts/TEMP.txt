@@ -1,0 +1,4 @@
+photo of a dog
+photo of a <krk1> dog
+Picture of <krk1> dog in a snowy landscape
+<krk1> dog in a flower-filled field during spring

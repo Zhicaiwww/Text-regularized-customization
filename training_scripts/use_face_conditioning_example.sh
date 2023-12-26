@@ -1,4 +1,4 @@
-export MODEL_NAME="runwayml/stable-diffusion-v1-5"
+export MODEL_NAME="models/stable-diffusion-v1-5"
 export INSTANCE_DIR="./data/data_captioned"
 export OUTPUT_DIR="./exps/krk_captioned_scale8"
 

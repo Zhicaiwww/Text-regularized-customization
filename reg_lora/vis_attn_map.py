@@ -20,7 +20,6 @@ activation = {}
 hooks = []
 
 def get_attn_softmax(name):
-
     def hook(model, input, kwargs, output):
         if kwargs is not None and 'encoder_hidden_states' in kwargs.keys() and kwargs['encoder_hidden_states'] is not None:
             with torch.no_grad():
@@ -71,7 +70,7 @@ if __name__ == '__main__':
     torch.manual_seed(0)
 
     device = f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu'
-    model_id = "runwayml/stable-diffusion-v1-5"
+    model_id = "models/stable-diffusion-v1-5"
     pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16,local_files_only=True,revision='39593d5650112b4cc580433f6b0435385882d819').to(device)
     pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
 

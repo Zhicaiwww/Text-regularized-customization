@@ -11,7 +11,7 @@ import inspect
 from pathlib import Path
 from typing import Optional
 import sys
-sys.path.append('/data/zhicai/code/Text-regularized-customization/')
+sys.path.append('/data/liox/Text-regularized-customization')
 
 import numpy as np
 import torch
@@ -39,18 +39,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from collections import defaultdict
 
 
-from lora_diffusion import (
-    extract_lora_ups_down,
-    inject_trainable_lora,
-    safetensors_available,
-    save_lora_weight,
-    save_safeloras_with_embeds,
-    UNET_CROSSATTN_TARGET_REPLACE,
-    UNET_DEFAULT_TARGET_REPLACE,
-    filter_unet_to_norm_weights,
-    prepare_clip_model_sets,
-    evaluate_pipe
-    )
+from lora_diffusion import *
 # from lora_diffusion.xformers_utils import set_use_memory_efficient_attention_xformers
 from custom_datasets.utils import IMAGENET_TEMPLATES_SMALL, IMAGENET_STYLE_TEMPLATES_SMALL, IMAGENET_TEMPLATES_TINY
 from reg_lora.clip_ti_reg import  CLIPTiScoreCalculator, CLIPTiTextModel
@@ -796,9 +785,9 @@ def main(args):
             revision=args.revision,
             local_files_only=args.local_files_only,
         )
-    placeholder_token = args.placeholder_token
-    num_added_tokens = tokenizer.add_tokens(placeholder_token)
-    placeholder_token_id =  tokenizer(placeholder_token, truncation=False, add_special_tokens=False)["input_ids"]
+    placeholder_token = args.placeholder_token.split('+')[-1]
+    num_added_tokens = tokenizer.add_tokens(args.placeholder_token.split('+'))
+    placeholder_token_id = tokenizer(placeholder_token, truncation=False, add_special_tokens=False)["input_ids"]
     class_token_ids = tokenizer(args.class_tokens, truncation=False, add_special_tokens=False)["input_ids"]
 
     # Load models and create wrapper for stable diffusion
@@ -825,31 +814,15 @@ def main(args):
             tok_dict,
             text_encoder,
             tokenizer,
-            token=args.placeholder_token,
+            token=args.placeholder_token.split('+')[:-1],  # the last placeholder needs to be learned
             idempotent=True,
         )
     else:
-        # Add the placeholder token in tokenizer
-        if num_added_tokens == 0:
-            raise ValueError(
-                f"The tokenizer already contains the token {placeholder_token}. Please pass a different"
-                " `placeholder_token` that is not already in the tokenizer."
-            )
-
-        if args.init_placeholder_as_class:
-            # Convert the class_tokens, placeholder_token to ids
-            # Check if class_tokens is a single token or a sequence of tokens
-            if len(class_token_ids) > 1:
-                Warning("The class_tokens is a sequence of tokens. We will use the last token as the initializer token.")
-            initializer_id = class_token_ids[-1]
-        else:
-            initializer_id = INITIALIZER_ID
-        initializer_norm = text_encoder.get_input_embeddings().weight.data[initializer_id].norm()
+        tok_dict = None
         text_encoder.resize_token_embeddings(len(tokenizer))
-        # Initialise the newly added placeholder token with the embeddings of the initializer token
-        token_embeds = text_encoder.get_input_embeddings().weight.data
-        token_embeds[placeholder_token_id] = token_embeds[initializer_id].unsqueeze(0).repeat(len(placeholder_token_id), 1)
 
+    text_encoder.get_input_embeddings().weight.data[-1] = torch.normal(0, 0.014, torch.Size([768]))  # Initialize the last placeholder    
+    initializer_norm = text_encoder.get_input_embeddings().weight.data[-1].norm()
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_vae_name_or_path or args.pretrained_model_name_or_path,
         subfolder=None if args.pretrained_vae_name_or_path else "vae",
@@ -862,6 +835,19 @@ def main(args):
         revision=args.revision,
         local_files_only=args.local_files_only,
     )
+
+    if args.resume_ti_embedding_path is not None:
+        # Add loras.unet.prev to pre-trained SD
+        safeloras = safe_open(args.resume_ti_embedding_path, framework="pt", device="cpu")
+        (lora, ranks, target) = parse_safeloras(safeloras)["unet"]
+        add_lora_params_to_model_by_lox(unet, lora, target, ranks, filter_crossattn_str=args.filter_crossattn_str)
+        # Get loras.unet.prev.weights
+        loras_unet_prev = [i.data for i in parse_safeloras(safeloras)['unet'][0]]
+        lora_prev_matrix = []
+        for idx in range(int(len(loras_unet_prev)/2)):
+            lora_prev_matrix.append(torch.matmul(loras_unet_prev[2*idx].float(), loras_unet_prev[2*idx+1].float()).to("cuda"))
+    else:
+        loras_unet_prev = None
 
     vae.requires_grad_(False)
     unet.requires_grad_(False)
@@ -1139,22 +1125,13 @@ def main(args):
         len(train_dataloader) / args.gradient_accumulation_steps
     )
 
-    if args.resume_ti_embedding_path is not None:
-        progress_bar = tqdm(
-            range(args.max_train_steps - args.ti_train_step), disable=not accelerator.is_local_main_process
-        )
-        progress_bar.set_description("Steps")
-        global_step = args.ti_train_step
-        last_save = args.ti_train_step
-        args.num_train_epochs = math.ceil((args.max_train_steps - args.ti_train_step) / num_update_steps_per_epoch)
-    else:
-        progress_bar = tqdm(
-            range(args.max_train_steps), disable=not accelerator.is_local_main_process
-        )
-        progress_bar.set_description("Steps")
-        global_step = 0
-        last_save = 0
-        args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+    progress_bar = tqdm(
+        range(args.max_train_steps), disable=not accelerator.is_local_main_process
+    )
+    progress_bar.set_description("Steps")
+    global_step = 0
+    last_save = 0
+    args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
     # Afterwards we recalculate our number of training epochs
 
     # We need to initialize the trackers we use, and also store our configuration.
@@ -1201,7 +1178,7 @@ def main(args):
         text_encoder.train()
         for step, batch in enumerate(train_dataloader):
             # region [Textual inversion training: freeze unet and text encoder during ti training]
-            if global_step < args.ti_train_step and not args.resume_ti_embedding_path:
+            if global_step < args.ti_train_step:
                 text_encoder.eval()
                 unet.eval()
                 loss = loss_step(
@@ -1321,6 +1298,17 @@ def main(args):
                         text_reg_k_loss = torch.mean(sum(_text_reg_k_loss)/len(_text_reg_k_loss))
                         loss += args.text_reg_beta_weight * text_reg_k_loss
 
+                if args.resume_ti_embedding_path is not None:
+                    _c_lora_loss = []
+                    for idx, module in enumerate(to_reg_params["lox_loras"]):
+                        lora_now = torch.matmul(module.lora_up.weight, module.lora_down.weight)
+                        _c_lora_loss.append(
+                            torch.norm(torch.mul(lora_prev_matrix[idx], lora_now), p=2)
+                        )
+                    if len(_c_lora_loss):
+                        c_lora_loss = torch.mean(sum(_c_lora_loss)/len(_c_lora_loss))
+                        loss += 1e8 * c_lora_loss
+
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = (
@@ -1397,7 +1385,8 @@ def main(args):
 
                             embeds[placeholder_token] = learned_embed.detach().cpu()
                             save_safeloras_with_embeds(
-                                loras, embeds, args.output_dir + f"/lora_weight_s{global_step}.safetensors"
+                                loras, embeds, args.output_dir + f"/lora_weight_s{global_step}.safetensors",
+                                tok_dict=tok_dict, loras_unet_prev=loras_unet_prev
                             ) 
 
                         last_save = global_step
@@ -1509,7 +1498,8 @@ def main(args):
             embeds = {placeholder_token: learned_embeds.detach().cpu()}
 
             save_safeloras_with_embeds(
-                loras, embeds, args.output_dir + "/lora_weight.safetensors"
+                loras, embeds, args.output_dir + "/lora_weight.safetensors",
+                tok_dict=tok_dict, loras_unet_prev=loras_unet_prev
             )
 
     accelerator.end_training()
