@@ -4,12 +4,8 @@
 # init_placeholder_as_class:  use the class token as the initializer, e.g., "cat" -> "<krk> cat"
 # train_text_encoder: train the text encoder
 # with_prior_preservation: use prior preserving dataset
-# class_data_dir: CLASS_PRIOR_DIR
-# class_prompt_or_file: CLASS_CAPTION_DIR
 # filter_crossattn_str: self, cross, full,cross+self
-# enbale_norm_reg 
 # enable_text_reg
-# norm_reg_alpha_weight
 # text_reg_alpha_weight
 # reg_prompts: photo of a cat
 # scale_norm_reg: scale the norm reg loss accpording to the 1/SNR
@@ -64,7 +60,3 @@ for seed in "${seeds[@]}"; do
     done
   done
 done
-
-        # --filter_crossattn_str="cross+self" \
-        # --enable_norm_reg \
-        # --norm_reg_alpha_weight=5000 \

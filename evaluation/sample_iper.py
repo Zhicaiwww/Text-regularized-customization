@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from pytorch_lightning import seed_everything
 from collections import defaultdict
-from diffusers import StableDiffusionPipeline, EulerAncestralDiscreteScheduler
+from diffusers import StableDiffusionPipeline, EulerAncestralDiscreteScheduler, StableDiffusionImg2ImgPipeline
 from lora_diffusion import patch_pipe, tune_lora_scale
 
 os.environ["DISABLE_TELEMETRY"] = 'YES'
@@ -19,30 +19,11 @@ os.environ["HTTP_PROXY"] = "http://localhost:8890"
 os.environ["HTTPS_PROXY"] = "http://localhost:8890"
 
 '''
-CUDA_VISIBLE_DEVICES=2 python evaluation/sample.py \
-    --prompts "Photo of a dog" \
-    --n_img 50 \
-    --outdir fig1/samoyed/_pretrained
-
-CUDA_VISIBLE_DEVICES=1 python evaluation/sample.py \
-    --lora_ckpt 'logs/log_iper/person4/2023-12-28T23-03-27_person_baseline/lora_weight.safetensors' \
+CUDA_VISIBLE_DEVICES=1 python evaluation/sample_iper.py \
+    --lora_ckpt 'logs/log_iper/person1/2023-12-28T22-55-39_person_baseline/lora_weight.safetensors' \
     --from_file prompts/TEMP.txt \
-    --n_img 10
-
-CUDA_VISIBLE_DEVICES=1 python evaluation/sample.py \
-    --lora_ckpt 'logs/Pick_Images/transferable_identifier/ratio=0.0/cat/2023-11-16T23-07-45_cat_textReg/lora_weight_s500.safetensors' \
-    --from_file prompts/TEMP.txt \
-    --n_img 10
-
-CUDA_VISIBLE_DEVICES=2 python evaluation/sample.py \
-    --lora_ckpt 'logs/Pick_Images/transferable_identifier/ratio=0.9/cat/2023-11-16T23-08-16_cat_textReg/lora_weight_s500.safetensors' \
-    --from_file prompts/TEMP.txt \
-    --n_img 10
-
-CUDA_VISIBLE_DEVICES=3 python evaluation/sample.py \
-    --lora_ckpt 'logs/Pick_Images/transferable_identifier/pretrained' \
-    --from_file prompts/TEMP.txt \
-    --n_img 10
+    --batch_size 1 \
+    --n_img 1
 '''
 
 def image_grid(_imgs, rows=None, cols=None):
@@ -83,7 +64,7 @@ if __name__  == '__main__':
 
     device = torch.device("cuda")
     time.sleep(0.01)
-    pipe = StableDiffusionPipeline.from_pretrained("models/stable-diffusion-v1-5", torch_dtype=torch.float16, revision='39593d5650112b4cc580433f6b0435385882d819', safety_checker=None, local_files_only=True).to(device)
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained("models/stable-diffusion-v1-5", torch_dtype=torch.float16, revision='39593d5650112b4cc580433f6b0435385882d819', safety_checker=None, local_files_only=True).to(device)
     pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config, )
     pipe.set_progress_bar_config(disable=True)
 
@@ -128,11 +109,14 @@ if __name__  == '__main__':
 
     images, prompt_list_maybe_shuffled = [], []
     prompt_dataset = DataLoader(prompt_list, batch_size=batch_size)
-    for prompts in tqdm(prompt_dataset, desc="Sampling"):
-        with torch.autocast("cuda"):
-            imgs_ = pipe(prompts, num_inference_steps=args.n_step, guidance_scale=5.0).images
-        images.extend(imgs_)
-        prompt_list_maybe_shuffled.extend(prompts)
+    ref_dir = "custom_datasets/iper_subset/person2"
+    for ref in sorted(os.listdir(ref_dir)):
+        for prompts in tqdm(prompt_dataset, desc="Sampling"):
+            with torch.autocast("cuda"):
+                imgs_ = pipe(image=Image.open(os.path.join(ref_dir, ref)), prompt=prompts, strength=0.5, num_inference_steps=args.n_step, guidance_scale=5.0).images
+                # imgs__ = [img.resize((512, 512), Image.BILINEAR) for img in imgs_]
+            images.extend(imgs_)
+            prompt_list_maybe_shuffled.extend(prompts)
     del pipe
 
     for idx, img in enumerate(images):

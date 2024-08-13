@@ -361,7 +361,6 @@ def inject_trainable_lora(
     verbose: bool = False,
     dropout_p: float = 0.0,
     scale: float = 1.0,
-    freeze_down_lora: bool = False,
     **kwargs,
 ):
     """
@@ -399,15 +398,13 @@ def inject_trainable_lora(
         _module._modules[name] = _tmp
 
         require_grad_params.append(_module._modules[name].lora_up.parameters())
-        if not freeze_down_lora:
-            require_grad_params.append(_module._modules[name].lora_down.parameters())
 
         if loras != None:
             _module._modules[name].lora_up.weight = loras.pop(0)
             _module._modules[name].lora_down.weight = loras.pop(0)
 
         _module._modules[name].lora_up.weight.requires_grad = True
-        _module._modules[name].lora_down.weight.requires_grad = True if not freeze_down_lora else False
+        _module._modules[name].lora_down.weight.requires_grad = True 
         names.append(name)
 
     return require_grad_params, names

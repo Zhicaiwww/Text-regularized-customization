@@ -5,18 +5,10 @@ from custom_datasets.utils import *
 
 '''
 python train_formal.py \
-    --log_dir logs/log_test \
-    --dataset D \
-    --specific_classes 'dog' \
-    --gpu_ids 6
-
-python train_formal.py \
-    --log_dir logs/Pick_Images/transferable_identifier/ratio=0.9 \
-    --mask_identifier_ratio 0.9 \
-    --dataset D \
-    --specific_classes 'cat' \
+    --log_dir logs/log_iper \
+    --dataset IPER \
     --required_mode 0 \
-    --gpu_ids 2
+    --gpu_ids 0
 
 rsync -av --exclude="eval" --exclude="logs" --exclude="*lora_weight_s*" logs/log_formal_D /data/zhicai/code/Text-regularized-customization
 !@#$%^+lds@ustc123456
@@ -28,6 +20,7 @@ dataset_dict = {
     "I": {**IMAGENET_LIVE_CLASSES, **IMAGENET_OBJECT_CLASSES},
     "A": {**ABLATION_CLASSES},
     "O": {**OXFORD_PET_CLASSES},
+    "IPER": {**IPER_CLASSES},
 }
 
 parser = argparse.ArgumentParser()

@@ -1,36 +1,44 @@
-import argparse, os, sys, pdb
-
+import os
+import argparse
 import torch
-from torchvision import transforms
-from torch.utils.data import Dataset
 import clip
 import PIL
+
 import numpy as np
+
 from PIL import Image
+from torchvision import transforms
+from torch.utils.data import Dataset
 
 
 class PersonalizedBase(Dataset):
-    def __init__(self,
-                 data_root,
-                 size=None,
-                 repeats=1,
-                 interpolation="bicubic",
-                 flip_p=0.5,
-                 set="test",
-                 placeholder_token="*",
-                 per_image_tokens=False,
-                 center_crop=False,
-                 mixing_prob=0.25,
-                 coarse_class_text=None,
-                 ):
+    def __init__(
+        self,
+        data_root,
+        size=None,
+        repeats=1,
+        interpolation="bicubic",
+        flip_p=0.5,
+        set="test",
+        placeholder_token="*",
+        per_image_tokens=False,
+        center_crop=False,
+        mixing_prob=0.25,
+        coarse_class_text=None,
+    ):
 
         self.data_root = data_root
 
-        self.image_paths = sorted([os.path.join(self.data_root, file_path) for file_path in os.listdir(self.data_root)])
+        self.image_paths = sorted(
+            [
+                os.path.join(self.data_root, file_path)
+                for file_path in os.listdir(self.data_root)
+            ]
+        )
 
         # self._length = len(self.image_paths)
         self.num_images = len(self.image_paths)
-        self._length = self.num_images 
+        self._length = self.num_images
 
         self.placeholder_token = placeholder_token
 
@@ -40,15 +48,15 @@ class PersonalizedBase(Dataset):
 
         self.coarse_class_text = coarse_class_text
 
-
         if set == "train":
             self._length = self.num_images * repeats
 
         self.size = size
-        self.interpolation = {"bilinear": PIL.Image.Resampling.BILINEAR,
-                              "bicubic": PIL.Image.Resampling.BICUBIC,
-                              "lanczos": PIL.Image.Resampling.LANCZOS,
-                             }[interpolation]
+        self.interpolation = {
+            "bilinear": PIL.Image.Resampling.BILINEAR,
+            "bicubic": PIL.Image.Resampling.BICUBIC,
+            "lanczos": PIL.Image.Resampling.LANCZOS,
+        }[interpolation]
         self.flip = transforms.RandomHorizontalFlip(p=flip_p)
 
     def __len__(self):
@@ -67,12 +75,19 @@ class PersonalizedBase(Dataset):
 
         # default to score-sde preprocessing
         img = np.array(image).astype(np.uint8)
-        
+
         if self.center_crop:
             crop = min(img.shape[0], img.shape[1])
-            h, w, = img.shape[0], img.shape[1]
-            img = img[(h - crop) // 2:(h + crop) // 2,
-                (w - crop) // 2:(w + crop) // 2]
+            (
+                h,
+                w,
+            ) = (
+                img.shape[0],
+                img.shape[1],
+            )
+            img = img[
+                (h - crop) // 2 : (h + crop) // 2, (w - crop) // 2 : (w + crop) // 2
+            ]
 
         image = Image.fromarray(img)
         if self.size is not None:
@@ -85,15 +100,19 @@ class PersonalizedBase(Dataset):
 
 
 class CLIPEvaluator(object):
-    def __init__(self, device, clip_model='ViT-B/32') -> None:
+    def __init__(self, device, clip_model="ViT-B/32") -> None:
         self.device = device
         self.model, clip_preprocess = clip.load(clip_model, device=self.device)
 
         self.clip_preprocess = clip_preprocess
-        
-        self.preprocess = transforms.Compose([transforms.Normalize(mean=[-1.0, -1.0, -1.0], std=[2.0, 2.0, 2.0])] + # Un-normalize from [-1.0, 1.0] (generator output) to [0, 1].
-                                              clip_preprocess.transforms[:2] +                                      # to match CLIP input scale assumptions
-                                              clip_preprocess.transforms[4:])                                       # + skip convert PIL to tensor
+
+        self.preprocess = transforms.Compose(
+            [
+                transforms.Normalize(mean=[-1.0, -1.0, -1.0], std=[2.0, 2.0, 2.0])
+            ]  # Un-normalize from [-1.0, 1.0] (generator output) to [0, 1].
+            + clip_preprocess.transforms[:2]  # to match CLIP input scale assumptions
+            + clip_preprocess.transforms[4:]
+        )  # + skip convert PIL to tensor
 
     def tokenize(self, strings: list):
         return clip.tokenize(strings).to(self.device)
@@ -120,7 +139,7 @@ class CLIPEvaluator(object):
 
     def get_image_features(self, img: torch.Tensor, norm: bool = True) -> torch.Tensor:
         image_features = self.encode_images(img)
-        
+
         if norm:
             image_features /= image_features.clone().norm(dim=-1, keepdim=True)
 
@@ -133,52 +152,77 @@ class CLIPEvaluator(object):
         return (src_img_features @ gen_img_features.T).mean()
 
     def txt_to_img_similarity(self, text, generated_images):
-        text_features    = self.get_text_features(text)
+        text_features = self.get_text_features(text)
         gen_img_features = self.get_image_features(generated_images)
 
         return (text_features @ gen_img_features.T).mean()
 
 
 class LDMCLIPEvaluator(CLIPEvaluator):
-    def __init__(self, device, clip_model='ViT-B/32') -> None:
+    def __init__(self, device, clip_model="ViT-B/32") -> None:
         super().__init__(device, clip_model)
 
     def evaluate(self, train_images, gen_samples, prompts):
-        
-        sim_img  = self.img_to_img_similarity(train_images, gen_samples)
-        sim_text, imgs_per_prompt = 0.0, int(gen_samples.shape[0]/len(prompts))
+
+        sim_img = self.img_to_img_similarity(train_images, gen_samples)
+        sim_text, imgs_per_prompt = 0.0, int(gen_samples.shape[0] / len(prompts))
         for i, prompt in enumerate(prompts):
-            sim_text += self.txt_to_img_similarity(prompt.replace("<new1>", ""), gen_samples[i*imgs_per_prompt:(i+1)*imgs_per_prompt,:,:,:])
-        return sim_img, sim_text/len(prompts)
+            sim_text += self.txt_to_img_similarity(
+                prompt.replace("<new1>", ""),
+                gen_samples[i * imgs_per_prompt : (i + 1) * imgs_per_prompt, :, :, :],
+            )
+        return sim_img, sim_text / len(prompts)
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--gen_data_dir", type=str, default="logs/logs_toTest/2023-04-08T04-49-07_teddybearreg_0_scale0_a_teddybear_ridge_onlyK_noblip/samples")
-    parser.add_argument("--gen_caption_txt", type=str, default="/home/zhicai/poseVideo/custom-diffusion/data/teddybear.txt")
-    parser.add_argument("--train_data_dir", type=str, default="/home/zhicai/poseVideo/custom-diffusion/data/teddybear")
-    parser.add_argument("--cuda", type=str, default='0')
+    parser.add_argument(
+        "--gen_data_dir",
+        type=str,
+        default="logs/logs_toTest/2023-04-08T04-49-07_teddybearreg_0_scale0_a_teddybear_ridge_onlyK_noblip/samples",
+    )
+    parser.add_argument(
+        "--gen_caption_txt",
+        type=str,
+        default="/home/zhicai/poseVideo/custom-diffusion/data/teddybear.txt",
+    )
+    parser.add_argument(
+        "--train_data_dir",
+        type=str,
+        default="/home/zhicai/poseVideo/custom-diffusion/data/teddybear",
+    )
+    parser.add_argument("--cuda", type=str, default="0")
     opt = parser.parse_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = opt.cuda
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     # Load training data
     print(f"Loading training data from {opt.train_data_dir}")
-    train_data_loader = PersonalizedBase(opt.train_data_dir, size=512, flip_p=0.0)  # [-1, 1]
-    train_data = [torch.from_numpy(train_data_loader[i]).permute(2, 0, 1) for i in range(train_data_loader.num_images)]
+    train_data_loader = PersonalizedBase(
+        opt.train_data_dir, size=512, flip_p=0.0
+    )  # [-1, 1]
+    train_data = [
+        torch.from_numpy(train_data_loader[i]).permute(2, 0, 1)
+        for i in range(train_data_loader.num_images)
+    ]
     train_data = torch.stack(train_data, axis=0)
 
     # Load generated data
     print(f"Loading generated data from {opt.gen_data_dir}")
-    gen_data_loader = PersonalizedBase(opt.gen_data_dir, size=512, flip_p=0.0)  # [-1, 1]
-    gen_data = [torch.from_numpy(gen_data_loader[i]).permute(2, 0, 1) for i in range(gen_data_loader.num_images)]
+    gen_data_loader = PersonalizedBase(
+        opt.gen_data_dir, size=512, flip_p=0.0
+    )  # [-1, 1]
+    gen_data = [
+        torch.from_numpy(gen_data_loader[i]).permute(2, 0, 1)
+        for i in range(gen_data_loader.num_images)
+    ]
     gen_data = torch.stack(gen_data, axis=0)
 
     # Load prompts for generation
     print(f"Reading prompts from {opt.gen_caption_txt}")
-    with open(opt.gen_caption_txt, "r") as f:
+    with open(opt.gen_caption_txt, "r", encoding="utf-8") as f:
         data = f.read().splitlines()
         prompts = [prompt for prompt in data]
 
@@ -189,4 +233,9 @@ if __name__ == "__main__":
     print("Text similarity: ", sim_text.item())
 
     # pdb.set_trace()
-    os.makedirs(os.path.join(opt.gen_data_dir.split('/samples')[0], f"{sim_img.item():.4f}_{sim_text.item():.4f}"))
+    os.makedirs(
+        os.path.join(
+            opt.gen_data_dir.split("/samples")[0],
+            f"{sim_img.item():.4f}_{sim_text.item():.4f}",
+        )
+    )

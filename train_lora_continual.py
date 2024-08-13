@@ -1,26 +1,23 @@
 # Bootstrapped from:
 # https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/train_dreambooth.py
 
-import argparse, pdb
-import hashlib
+import argparse
 import itertools
 import math
 import os
 import random
-import inspect
-from pathlib import Path
-from typing import Optional
 import sys
+from pathlib import Path
+
 sys.path.append('/data/liox/Text-regularized-customization')
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from PIL import Image, ImageFile
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-from torch.utils.data import Dataset
-from torchvision import transforms
+from collections import defaultdict
 from functools import partial
 
 from accelerate import Accelerator
@@ -33,17 +30,19 @@ from diffusers import (
     UNet2DConditionModel,
 )
 from diffusers.optimization import get_scheduler
-from huggingface_hub import HfFolder, Repository, whoami
+from TextReg.modules import CLIPTiTextModel
+from torch.utils.data import Dataset
+from torchvision import transforms
 from tqdm.auto import tqdm
-from transformers import CLIPTextModel, CLIPTokenizer
-from collections import defaultdict
+from transformers import CLIPTokenizer
 
-
-from lora_diffusion import *
 # from lora_diffusion.xformers_utils import set_use_memory_efficient_attention_xformers
-from custom_datasets.utils import IMAGENET_TEMPLATES_SMALL, IMAGENET_STYLE_TEMPLATES_SMALL, IMAGENET_TEMPLATES_TINY
-from reg_lora.clip_ti_reg import  CLIPTiScoreCalculator, CLIPTiTextModel
-
+from custom_datasets.utils import (
+    IMAGENET_STYLE_TEMPLATES_SMALL,
+    IMAGENET_TEMPLATES_SMALL,
+    IMAGENET_TEMPLATES_TINY,
+)
+from lora_diffusion import *
 
 os.environ['DISABLE_TELEMETRY'] = 'YES'
 os.environ['HTTP_PROXY'] = 'http://localhost:8890'
@@ -803,8 +802,12 @@ def main(args):
     )
 
     if args.resume_ti_embedding_path is not None:
-        from lora_diffusion.lora import apply_learned_embed_in_clip, parse_safeloras_embeds
         from safetensors.torch import safe_open
+
+        from lora_diffusion.lora import (
+            apply_learned_embed_in_clip,
+            parse_safeloras_embeds,
+        )
 
         print("Loading learned embeddings from: ", args.resume_ti_embedding_path)
         safeloras = safe_open(args.resume_ti_embedding_path, framework="pt", device="cpu")
