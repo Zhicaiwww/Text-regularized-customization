@@ -1,5 +1,6 @@
 # Bootstrapped from:
 # https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/train_dreambooth.py
+# Loxs
 
 import argparse
 import itertools
