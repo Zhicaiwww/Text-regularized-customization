@@ -377,12 +377,6 @@ def parse_args(input_args=None):
         help="resume_ti_embedding_path",
     )
     parser.add_argument(
-        "--ti_train_step",
-        type=int,
-        default=500,
-        help="Save checkpoint every X updates steps.",
-    )
-    parser.add_argument(
         "--learning_rate_ti",
         type=float,
         default=5e-4,
@@ -501,11 +495,10 @@ def loss_step(
     encoder_hidden_states = text_encoder(batch["input_ids"])[0]
 
     # Predict the noise residual
-    model_pred = unet(
-        sample=noisy_latents,
-        timestep=timesteps,
-        encoder_hidden_states=encoder_hidden_states,
-    ).sample
+    model_pred = unet(sample=noisy_latents, 
+                      timestep=timesteps,
+                      encoder_hidden_states=encoder_hidden_states
+                      ).sample
 
     # Get the target for loss depending on the prediction type
     if noise_scheduler.config.prediction_type == "epsilon":
@@ -657,58 +650,41 @@ def main(args):
         subfolder="text_encoder",
         revision=args.revision,
         class_token_len=len(class_token_ids),
-        placeholder_token_id=placeholder_token_id[
-            0
-        ],  # We only support on placeholder token for now
+        placeholder_token_id=placeholder_token_id[0],  # We only support on placeholder token for now
         local_files_only=args.local_files_only,
         mask_identifier_causal_attention=args.mask_identifier_causal_attention,
         mask_identifier_ratio=args.mask_identifier_ratio,
     )
 
-    if args.resume_ti_embedding_path is not None:
 
-        print("Loading learned embeddings from: ", args.resume_ti_embedding_path)
-        safeloras = safe_open(
-            args.resume_ti_embedding_path, framework="pt", device="cpu"
+    # Add the placeholder token in tokenizer
+    if num_added_tokens == 0:
+        raise ValueError(
+            f"The tokenizer already contains the token {args.placeholder_token}. Please pass a different"
+            " `placeholder_token` that is not already in the tokenizer."
         )
 
-        tok_dict = parse_safeloras_embeds(safeloras)
-        apply_learned_embed_in_clip(
-            tok_dict,
-            text_encoder,
-            tokenizer,
-            token=args.placeholder_token,
-            idempotent=True,
-        )
-    else:
-        # Add the placeholder token in tokenizer
-        if num_added_tokens == 0:
-            raise ValueError(
-                f"The tokenizer already contains the token {args.placeholder_token}. Please pass a different"
-                " `placeholder_token` that is not already in the tokenizer."
+    if args.init_placeholder_as_class:
+        # Check if class_tokens is a single token or a sequence of tokens
+        if len(class_token_ids) > 1:
+            print(
+                "The class_tokens is a sequence of tokens. We will use the last token as the initializer token."
             )
+        initializer_id = class_token_ids[-1]
+    else:
+        initializer_id = INITIALIZER_ID
 
-        if args.init_placeholder_as_class:
-            # Check if class_tokens is a single token or a sequence of tokens
-            if len(class_token_ids) > 1:
-                print(
-                    "The class_tokens is a sequence of tokens. We will use the last token as the initializer token."
-                )
-            initializer_id = class_token_ids[-1]
-        else:
-            initializer_id = INITIALIZER_ID
-
-        initializer_norm = (
-            text_encoder.get_input_embeddings().weight.data[initializer_id].norm()
-        )
-        text_encoder.resize_token_embeddings(len(tokenizer))
-        # Initialise the newly added placeholder token with the embeddings of the initializer token
-        token_embeds = text_encoder.get_input_embeddings().weight.data
-        token_embeds[placeholder_token_id] = (
-            token_embeds[initializer_id]
-            .unsqueeze(0)
-            .repeat(len(placeholder_token_id), 1)
-        )
+    initializer_norm = (
+        text_encoder.get_input_embeddings().weight.data[initializer_id].norm()
+    )
+    text_encoder.resize_token_embeddings(len(tokenizer))
+    # Initialise the newly added placeholder token with the embeddings of the initializer token
+    token_embeds = text_encoder.get_input_embeddings().weight.data
+    token_embeds[placeholder_token_id] = (
+        token_embeds[initializer_id]
+        .unsqueeze(0)
+        .repeat(len(placeholder_token_id), 1)
+    )
 
     # Load the VAE and UNet
     vae = AutoencoderKL.from_pretrained(
@@ -912,14 +888,14 @@ def main(args):
         args.lr_scheduler,
         optimizer=optimizer_ti,
         num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
-        num_training_steps=args.ti_train_step * args.gradient_accumulation_steps,
+        num_training_steps=args.max_train_steps
     )
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
-        num_training_steps=(args.max_train_steps - args.ti_train_step)
+        num_training_steps=args.max_train_steps
         * args.gradient_accumulation_steps,
     )
 
@@ -936,27 +912,16 @@ def main(args):
         len(train_dataloader) / args.gradient_accumulation_steps
     )
 
-    if args.resume_ti_embedding_path is not None:
-        progress_bar = tqdm(
-            range(args.max_train_steps - args.ti_train_step),
-            disable=not accelerator.is_local_main_process,
-        )
-        progress_bar.set_description("Steps")
-        global_step = args.ti_train_step
-        last_save = args.ti_train_step
-        args.num_train_epochs = math.ceil(
-            (args.max_train_steps - args.ti_train_step) / num_update_steps_per_epoch
-        )
-    else:
-        progress_bar = tqdm(
-            range(args.max_train_steps), disable=not accelerator.is_local_main_process
-        )
-        progress_bar.set_description("Steps")
-        global_step = 0
-        last_save = 0
-        args.num_train_epochs = math.ceil(
-            args.max_train_steps / num_update_steps_per_epoch
-        )
+
+    progress_bar = tqdm(
+        range(args.max_train_steps), disable=not accelerator.is_local_main_process
+    )
+    progress_bar.set_description("Steps")
+    global_step = 0
+    last_save = 0
+    args.num_train_epochs = math.ceil(
+        args.max_train_steps / num_update_steps_per_epoch
+    )
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -997,127 +962,97 @@ def main(args):
 
     ################################################ Start Training #################################################
     logs = {}
-    
     for _ in range(args.num_train_epochs):
         unet.train()
         text_encoder.train()
         for _, batch in enumerate(train_dataloader):
-            # Textural Inversion
-            if global_step < args.ti_train_step and not args.resume_ti_embedding_path:
-                text_encoder.eval()
-                unet.eval()
-                loss = loss_step(
-                    batch=batch,
-                    unet=unet,
-                    vae=vae,
-                    text_encoder=text_encoder,
-                    noise_scheduler=noise_scheduler,
-                    weight_dtype=weight_dtype,
-                    cached_latents=args.cached_latents,
-                    with_prior_preservation=False,
+
+            # Fine-tuning identifier Token and UNet
+            text_encoder.train()
+            unet.train()
+            loss, _ = loss_step(
+                batch=batch,
+                unet=unet,
+                vae=vae,
+                text_encoder=text_encoder,
+                noise_scheduler=noise_scheduler,
+                weight_dtype=weight_dtype,
+                cached_latents=args.cached_latents,
+                with_prior_preservation=args.with_prior_preservation,
+                prior_loss_weight=args.prior_loss_weight,
+                return_verbose=True,
+            )
+
+            if args.enable_text_reg:
+                reg_cpp_conditions = text_encoder(batch["reg_cpp_ids"])[0]
+                reg_epp_conditions = text_encoder(batch["reg_epp_ids"])[0]
+
+                cpp_loss_list = []  # class prior preservation loss list
+                epp_loss_list = []  # edit prior preservation loss list
+                for module in to_reg_params["cross_project_loras"]:
+                    cpp_loss_list.append(module.get_reg_loss(reg_cpp_conditions))
+                for module in to_reg_params["cross_project_k_loras"]:
+                    epp_loss_list.append(module.get_reg_loss(reg_epp_conditions))
+
+                cpp_loss = torch.mean(sum(cpp_loss_list) / len(cpp_loss_list))
+                epp_loss = torch.mean(sum(epp_loss_list) / len(epp_loss_list))
+
+                loss += args.text_reg_alpha_weight * cpp_loss
+                loss += args.text_reg_beta_weight * epp_loss
+
+                logs["cpp_loss"] = cpp_loss.detach().item()
+                logs["epp_loss"] = epp_loss.detach().item()
+
+                for idx, module in enumerate(to_reg_params["other_loras"]):
+                    logs[f"{idx}_lora_up_weight_norm"] = (
+                        module.lora_up.weight.norm().detach().item()
+                    )
+                    logs[f"{idx}_lora_down_weight_norm"] = (
+                        module.lora_down.weight.norm().detach().item()
+                    )
+
+            accelerator.backward(loss)
+
+            if accelerator.sync_gradients:
+                params_to_clip = (
+                    itertools.chain(unet.parameters(), text_encoder.parameters())
+                    if args.train_text_encoder
+                    else unet.parameters()
+                )
+                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+
+            optimizer.step()
+            optimizer_ti.step()
+            optimizer.zero_grad()
+            optimizer_ti.zero_grad()
+            lr_scheduler.step()
+            lr_scheduler_ti.step()
+            
+            progress_bar.update(1)
+            global_step += 1
+
+            with torch.no_grad():
+                # normalize embeddings
+                pre_norm = (
+                    text_encoder.get_input_embeddings()
+                    .weight[index_updates, :]
+                    .norm(dim=-1, keepdim=True)
+                )
+                lambda_ = min(1.0, 100 * lr_scheduler_ti.get_last_lr()[0])
+
+                text_encoder.get_input_embeddings().weight[index_updates] = (
+                    F.normalize(
+                        text_encoder.get_input_embeddings().weight[
+                            index_updates, :
+                        ],
+                        dim=-1,
+                    )
+                    * (pre_norm + lambda_ * (initializer_norm - pre_norm))
                 )
 
-                accelerator.backward(loss)
-                optimizer_ti.step()
-                lr_scheduler_ti.step()
-                progress_bar.update(1)
-                optimizer_ti.zero_grad()
-                global_step += 1
-                ti_logs = {"ti_loss": loss.detach().item()}
-
-                ########################################### Norm Embedding ###########################################
-                with torch.no_grad():
-                    # normalize embeddings
-                    pre_norm = (
-                        text_encoder.get_input_embeddings()
-                        .weight[index_updates, :]
-                        .norm(dim=-1, keepdim=True)
-                    )
-                    lambda_ = min(1.0, 100 * lr_scheduler_ti.get_last_lr()[0])
-
-                    text_encoder.get_input_embeddings().weight[index_updates] = (
-                        F.normalize(
-                            text_encoder.get_input_embeddings().weight[
-                                index_updates, :
-                            ],
-                            dim=-1,
-                        )
-                        * (pre_norm + lambda_ * (initializer_norm - pre_norm))
-                    )
-
-                    current_norm = (
-                        text_encoder.get_input_embeddings()
-                        .weight[index_updates, :]
-                        .norm(dim=-1)
-                    )
-
-                    text_encoder.get_input_embeddings().weight[index_no_updates] = (
-                        orig_embeds_params[index_no_updates]
-                    )
-                    ti_logs["current_norm"] = current_norm.detach().item()
-
-                accelerator.log(ti_logs, step=global_step)
-
-            # Fine-tuning UNet
-            else:
-                text_encoder.train()
-                unet.train()
-                loss, _ = loss_step(
-                    batch=batch,
-                    unet=unet,
-                    vae=vae,
-                    text_encoder=text_encoder,
-                    noise_scheduler=noise_scheduler,
-                    weight_dtype=weight_dtype,
-                    cached_latents=args.cached_latents,
-                    with_prior_preservation=args.with_prior_preservation,
-                    prior_loss_weight=args.prior_loss_weight,
-                    return_verbose=True,
+                text_encoder.get_input_embeddings().weight[index_no_updates] = (
+                    orig_embeds_params[index_no_updates]
                 )
-
-                if args.enable_text_reg:
-                    reg_cpp_conditions = text_encoder(batch["reg_cpp_ids"])[0]
-                    reg_epp_conditions = text_encoder(batch["reg_epp_ids"])[0]
-
-                    cpp_loss_list = []  # class prior preservation loss list
-                    epp_loss_list = []  # edit prior preservation loss list
-                    for module in to_reg_params["cross_project_loras"]:
-                        cpp_loss_list.append(module.get_reg_loss(reg_cpp_conditions))
-                    for module in to_reg_params["cross_project_k_loras"]:
-                        epp_loss_list.append(module.get_reg_loss(reg_epp_conditions))
-
-                    cpp_loss = torch.mean(sum(cpp_loss_list) / len(cpp_loss_list))
-                    epp_loss = torch.mean(sum(epp_loss_list) / len(epp_loss_list))
-
-                    loss += args.text_reg_alpha_weight * cpp_loss
-                    loss += args.text_reg_beta_weight * epp_loss
-
-                    logs["cpp_loss"] = cpp_loss.detach().item()
-                    logs["epp_loss"] = epp_loss.detach().item()
-
-                    for idx, module in enumerate(to_reg_params["other_loras"]):
-                        logs[f"{idx}_lora_up_weight_norm"] = (
-                            module.lora_up.weight.norm().detach().item()
-                        )
-                        logs[f"{idx}_lora_down_weight_norm"] = (
-                            module.lora_down.weight.norm().detach().item()
-                        )
-
-                accelerator.backward(loss)
-
-                if accelerator.sync_gradients:
-                    params_to_clip = (
-                        itertools.chain(unet.parameters(), text_encoder.parameters())
-                        if args.train_text_encoder
-                        else unet.parameters()
-                    )
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
-
-                optimizer.step()
-                lr_scheduler.step()
-                progress_bar.update(1)
-                optimizer.zero_grad()
-                global_step += 1
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

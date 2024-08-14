@@ -34,11 +34,10 @@ def get_identifier_masked_causal_attention_mask(
 
     if random.random() < mask_identifier_ratio:
         assert class_token_len >= 1
+        mask = torch.empty(bs, seq_len, seq_len, dtype=dtype).unsqueeze(1)
         for i, identifier_indice in zip(identifier_indices[0],identifier_indices[1]):
-            mask = torch.empty(bs, seq_len, seq_len, dtype=dtype)
             mask.fill_(torch.tensor(torch.finfo(dtype).min))
             mask.triu_(1)  # zero out the lower diagonal
-            mask = mask.unsqueeze(1)  # expand mask
             mask[i,:,identifier_indice, :max(identifier_indice,1)] = torch.finfo(dtype).min
             mask[i,:,identifier_indice+class_token_len+1:,identifier_indice] = torch.finfo(dtype).min
     else:
@@ -93,7 +92,7 @@ class CLIPTiTextTransformer(CLIPTextTransformer):
                 bsz,
                 seq_len,
                 identifier_indices,
-                class_token_len=self.class_token_len, 
+                class_token_len=self.class_token_len,
                 dtype=hidden_states.dtype,
                 mask_identifier_ratio=self.mask_identifier_ratio,
                 ).to(hidden_states.device)
