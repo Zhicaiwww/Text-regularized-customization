@@ -1,11 +1,16 @@
-import os, random, pdb
 import math
-from PIL import Image
+import os
+import pdb
+import random
 from glob import glob
-from tqdm.auto import tqdm
+
 import torch
+from cleanfid.features import build_feature_extractor
+from cleanfid.utils import ResizeDataset
+from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from tqdm.auto import tqdm
 from transformers import (
     CLIPProcessor,
     CLIPTextModelWithProjection,
@@ -13,10 +18,8 @@ from transformers import (
     CLIPVisionModelWithProjection,
     logging,
 )
-from custom_datasets.utils import parse_templates_from_superclass
-from cleanfid.utils import ResizeDataset
-from cleanfid.features import build_feature_extractor
 
+from utils import parse_templates_from_superclass
 
 EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
               'tif', 'tiff', 'webp', 'npy', 'JPEG', 'JPG', 'PNG'}

@@ -1,8 +1,13 @@
-import os, sys, argparse, datetime, pdb
-import shutil
+import argparse
+import datetime
+import os
+import pdb
 import shlex
+import shutil
 import subprocess
-from custom_datasets.utils import parse_templates_class_name, which_target_dataset, print_box
+import sys
+
+from utils import parse_templates_class_name, print_box, which_target_dataset
 
 '''
 scp -P 2125 -r liox@112.29.111.160:/data/zhicai/code/Text-regularized-customization/custom_datasets/Oxford-IIIT-Pet /data/liox/Text-regularized-customization/custom_datasets

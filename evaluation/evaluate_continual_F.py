@@ -1,9 +1,15 @@
-import os, sys, json, pdb
+import json
+import os
+import pdb
+import sys
+
 sys.path.append('/data/zhicai/code/Text-regularized-customization')
 import argparse
-import torch
 from multiprocessing import Process, Queue
-from custom_datasets.utils import *
+
+import torch
+
+from utils import *
 
 '''
 '''

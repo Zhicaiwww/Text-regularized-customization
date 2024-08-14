@@ -1,14 +1,13 @@
-import os
 import argparse
-import torch
+import os
+
 import clip
-import PIL
-
 import numpy as np
-
+import PIL
+import torch
 from PIL import Image
-from torchvision import transforms
 from torch.utils.data import Dataset
+from torchvision import transforms
 
 
 class PersonalizedBase(Dataset):

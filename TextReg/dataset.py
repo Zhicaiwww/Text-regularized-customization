@@ -1,11 +1,21 @@
-import torch
-import os
 import math
+import os
 import random
-from custom_datasets.utils import IMAGENET_TEMPLATES_SMALL, IMAGENET_STYLE_TEMPLATES_SMALL, IMAGENET_TEMPLATES_TINY
-from torchvision import transforms
 from pathlib import Path
+
+import torch
 from PIL import Image
+from torchvision import transforms
+
+from utils import (
+    ART_PROMPT_LIST,
+    IMAGENET_STYLE_TEMPLATES_SMALL,
+    IMAGENET_STYLE_TEMPLATES_TINY,
+    IMAGENET_TEMPLATES_SMALL,
+    IMAGENET_TEMPLATES_TINY,
+    OBJECT_PROMPT_LIST,
+)
+
 
 class ConcatenateDataset(torch.utils.data.Dataset):
     def __init__(self, ds1, ds2):
@@ -40,19 +50,19 @@ class DreamBoothTiDataset(torch.utils.data.Dataset):
         prompts_file=None,
         return_reg_text=False,
         center_crop=False,
-        reg_prompts= None,
         repeat = 20,
     ):
+
         if return_reg_text:
             assert class_token is not None
-        self.class_token = class_token
+
         self.size = size
         self.center_crop = center_crop
         self.tokenizer = tokenizer
         self.repeat = repeat
         self.return_reg_text = return_reg_text
+        self.class_token = class_token
         self.custom_token = custom_token
-        self.reg_prompts = reg_prompts
         self.prompts = None
 
         self.instance_data_root = Path(instance_data_root)
@@ -69,11 +79,14 @@ class DreamBoothTiDataset(torch.utils.data.Dataset):
         
         self.num_instance_images = len(self.instance_images_path)
 
-        self.templates = (
-            IMAGENET_STYLE_TEMPLATES_SMALL
-            if learnable_property == "style"
-            else IMAGENET_TEMPLATES_SMALL
-        )
+        if learnable_property == "object":
+            self.templates = IMAGENET_TEMPLATES_SMALL
+            self.cpp_templates = IMAGENET_TEMPLATES_TINY
+            self.epp_templates = OBJECT_PROMPT_LIST
+        elif learnable_property == "style":
+            self.templates = IMAGENET_STYLE_TEMPLATES_SMALL
+            self.cpp_templates = IMAGENET_STYLE_TEMPLATES_TINY
+            self.epp_templates = ART_PROMPT_LIST
 
         if prompts_file is not None and os.path.exists(prompts_file):
             with open(prompts_file, 'r', encoding='utf-8') as f:
@@ -114,13 +127,18 @@ class DreamBoothTiDataset(torch.utils.data.Dataset):
         ).input_ids
 
         if self.return_reg_text:
-            if self.reg_prompts is None:
-                reg_text = random.choice(IMAGENET_TEMPLATES_TINY).format(self.class_token)
-            else:
-                reg_text = random.choice(self.reg_prompts)
+            reg_cpp_text = random.choice(self.cpp_templates).format(self.class_token)
+            reg_epp_text = random.choice(self.epp_templates).format(self.custom_token)
 
             example["reg_cpp_prompt_ids"] = self.tokenizer(
-                reg_text,
+                reg_cpp_text,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+                max_length=self.tokenizer.model_max_length,
+            ).input_ids
+            example["reg_epp_prompt_ids"] = self.tokenizer(
+                reg_epp_text,
                 padding="max_length",
                 truncation=True,
                 return_tensors="pt",

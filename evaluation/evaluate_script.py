@@ -1,8 +1,18 @@
-import os, sys, json, pdb
+import json
+import os
+import pdb
+import sys
+
 sys.path.append('/data/zhicai/code/Text-regularized-customization')
 import argparse
 from multiprocessing import Process, Queue
-from custom_datasets.utils import which_target_dataset, parse_templates_from_superclass, parse_templates_class_name, print_box
+
+from utils import (
+    parse_templates_class_name,
+    parse_templates_from_superclass,
+    print_box,
+    which_target_dataset,
+)
 
 '''
 python evaluation/evaluate_script.py --log_dir logs/log_ablation/image_reg/logs/log_type --gpu_ids 1,2,3

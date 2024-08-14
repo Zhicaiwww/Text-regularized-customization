@@ -1,10 +1,10 @@
 # Bootstrapped from:
 # https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/train_dreambooth.py
 
+import argparse
 import itertools
 import math
 import os
-import argparse
 from functools import partial
 from pathlib import Path
 
@@ -28,23 +28,21 @@ from transformers import CLIPTokenizer
 
 from lora_diffusion import (
     UNET_CROSSATTN_TARGET_REPLACE,
+    apply_learned_embed_in_clip,
     evaluate_pipe,
     extract_lora_ups_down,
     filter_unet_to_norm_weights,
     inject_trainable_lora,
+    parse_safeloras_embeds,
     prepare_clip_model_sets,
+    safetensors_available,
     save_lora_weight,
     save_safeloras_with_embeds,
-    safetensors_available,
-    apply_learned_embed_in_clip,
-    parse_safeloras_embeds
 )
-
-from TextReg.modules import CLIPTiTextModel
 from TextReg.dataset import ConcatenateDataset, DreamBoothTiDataset
+from TextReg.modules import CLIPTiTextModel
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-
 INITIALIZER_TOKEN = "ktn"
 INITIALIZER_ID = 42170
 
@@ -52,10 +50,9 @@ logger = get_logger(__name__)
 
 
 def parse_args(input_args=None):
-
-    '''
+    """
     Parse the arguments for the training script.
-    '''
+    """
 
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser.add_argument(
@@ -348,31 +345,70 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--use_xformers", action="store_true", help="Whether or not to use xformers"
     )
+    parser.add_argument("--cached_latents", action="store_true", help="cached_latents")
+
     parser.add_argument(
-        "--cached_latents", action="store_true", help="cached_latents"
+        "--filter_crossattn_str",
+        type=str,
+        default="cross",
+        choices=["self", "cross", "cross+self", "full"],
+        help="filter_crossattn_str",
     )
 
-    parser.add_argument("--filter_crossattn_str",type = str, default='cross', choices=['self', 'cross', 'cross+self', 'full'], help="filter_crossattn_str")
+    # Hyper for Cross-TextReg
+    parser.add_argument(
+        "--enable_text_reg", action="store_true", help="enable_text_reg"
+    )
+    parser.add_argument(
+        "--text_reg_alpha_weight",
+        type=float,
+        default=0.01,
+        help="text_reg_alpha_weight",
+    )
+    parser.add_argument(
+        "--text_reg_beta_weight", type=float, default=0.01, help="text_reg_beta_weight"
+    )
 
-    # Hyper for Cross-TextReg 
-    parser.add_argument("--enable_text_reg", action="store_true", help="enable_text_reg")
-    parser.add_argument("--text_reg_alpha_weight", type=float, default=0.01, help="text_reg_alpha_weight")
-    parser.add_argument("--text_reg_beta_weight", type=float, default=0.01, help="text_reg_beta_weight")
-    parser.add_argument("--reg_prompts", type = str, default=None, nargs='*', help="if set as None, default templates will be used")
-
-    # Hyper for Textual inversion 
-    parser.add_argument("--resume_ti_embedding_path", type =str, default=None, help="resume_ti_embedding_path")
-    parser.add_argument("--ti_train_step", type=int, default=500, help="Save checkpoint every X updates steps.",) 
-    parser.add_argument("--learning_rate_ti", type=float, default=5e-4, help="Initial learning rate for embedding of textual inversion (after the potential warmup period) to use.",)
+    # Hyper for Textual inversion
+    parser.add_argument(
+        "--resume_ti_embedding_path",
+        type=str,
+        default=None,
+        help="resume_ti_embedding_path",
+    )
+    parser.add_argument(
+        "--ti_train_step",
+        type=int,
+        default=500,
+        help="Save checkpoint every X updates steps.",
+    )
+    parser.add_argument(
+        "--learning_rate_ti",
+        type=float,
+        default=5e-4,
+        help="Initial learning rate for embedding of textual inversion (after the potential warmup period) to use.",
+    )
 
     # Other important Hypers
-    parser.add_argument("--init_placeholder_as_class", action= "store_true", help="Whether to use the initializer token as a class token.",) 
-    parser.add_argument("--mask_identifier_causal_attention", action="store_true", help="cached_latents")
-    parser.add_argument("--mask_identifier_ratio", type=float, default=0.5, help="text_reg_beta_weight")
+    parser.add_argument(
+        "--init_placeholder_as_class",
+        action="store_true",
+        help="Whether to use the initializer token as a class token.",
+    )
+    parser.add_argument(
+        "--mask_identifier_causal_attention", action="store_true", help="cached_latents"
+    )
+    parser.add_argument(
+        "--mask_identifier_ratio", type=float, default=0.5, help="text_reg_beta_weight"
+    )
 
     parser.add_argument("--log_evaluation", action="store_true", help="log_evaluation")
-    parser.add_argument("--log_evaluation_step", type=int, default=50, help="log_evaluation_step")
-    parser.add_argument("--local_files_only", action="store_true", help="local_files_only")
+    parser.add_argument(
+        "--log_evaluation_step", type=int, default=50, help="log_evaluation_step"
+    )
+    parser.add_argument(
+        "--local_files_only", action="store_true", help="local_files_only"
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -387,9 +423,11 @@ def parse_args(input_args=None):
         if args.class_data_dir is None:
             raise ValueError("You must specify a data directory for class images.")
 
-    if  args.enable_text_reg:
-        assert args.filter_crossattn_str is 'cross'
-        print(f"Uses text regularization: text_reg_alpha_weight={args.text_reg_alpha_weight}")
+    if args.enable_text_reg:
+        assert args.filter_crossattn_str == "cross"
+        print(
+            f"Uses text regularization: text_reg_alpha_weight={args.text_reg_alpha_weight}"
+        )
 
     if not safetensors_available:
         if args.output_format == "both":
@@ -402,6 +440,7 @@ def parse_args(input_args=None):
                 "Safetensors is not available - either install it, or change output_format."
             )
     return args
+
 
 def save_progress(
     text_encoder, placeholder_token, placeholder_token_id, accelerator, save_path
@@ -462,7 +501,10 @@ def loss_step(
     encoder_hidden_states = text_encoder(batch["input_ids"])[0]
 
     # Predict the noise residual
-    model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+    model_pred = unet(sample=noisy_latents, 
+                      timestep=timesteps,
+                      encoder_hidden_states=encoder_hidden_states
+                      ).sample
 
     # Get the target for loss depending on the prediction type
     if noise_scheduler.config.prediction_type == "epsilon":
@@ -516,7 +558,9 @@ def unfreeze_params(params):
 
 
 def collate_fn(examples):
-    input_ids = torch.stack([example["instance_prompt_ids"] for example in examples])  # bs, 1, 77
+    input_ids = torch.stack(
+        [example["instance_prompt_ids"] for example in examples]
+    )  # bs, 1, 77
     pixel_values = torch.stack([example["instance_images"] for example in examples])
 
     if len(pixel_values.size()) == 5:  # with class images
@@ -529,7 +573,7 @@ def collate_fn(examples):
         "input_ids": input_ids,
         "pixel_values": pixel_values,
     }
-    if "reg_prompt_ids" in examples[0].keys():
+    if "reg_cpp_prompt_ids" in examples[0].keys():
         reg_cpp_ids = torch.cat([example["reg_cpp_prompt_ids"] for example in examples])
         reg_epp_ids = torch.cat([example["reg_epp_prompt_ids"] for example in examples])
         batch["reg_cpp_ids"] = reg_cpp_ids
@@ -595,8 +639,12 @@ def main(args):
 
     num_added_tokens = tokenizer.add_tokens(args.placeholder_token)
 
-    placeholder_token_id = tokenizer(args.placeholder_token, truncation=False, add_special_tokens=False)["input_ids"]
-    class_token_ids = tokenizer(args.class_tokens, truncation=False, add_special_tokens=False)["input_ids"]
+    placeholder_token_id = tokenizer(
+        args.placeholder_token, truncation=False, add_special_tokens=False
+    )["input_ids"]
+    class_token_ids = tokenizer(
+        args.class_tokens, truncation=False, add_special_tokens=False
+    )["input_ids"]
 
     assert (
         len(placeholder_token_id) == 1
@@ -608,9 +656,7 @@ def main(args):
         subfolder="text_encoder",
         revision=args.revision,
         class_token_len=len(class_token_ids),
-        placeholder_token_id=placeholder_token_id[
-            0
-        ],  # We only support on placeholder token for now
+        placeholder_token_id=placeholder_token_id[0],  # We only support on placeholder token for now
         local_files_only=args.local_files_only,
         mask_identifier_causal_attention=args.mask_identifier_causal_attention,
         mask_identifier_ratio=args.mask_identifier_ratio,
@@ -677,7 +723,6 @@ def main(args):
 
     vae.requires_grad_(False)
     unet.requires_grad_(False)
-
     # Inject LoRA into the UNet and Text Encoder
     if args.init_placeholder_as_class:
         custom_token = args.placeholder_token
@@ -687,7 +732,6 @@ def main(args):
         )  # '<krk1> dog'
 
     target_module = UNET_CROSSATTN_TARGET_REPLACE
-
     unet_lora_params, _ = inject_trainable_lora(
         unet,
         target_replace_module=target_module,
@@ -746,7 +790,7 @@ def main(args):
     # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
     if args.use_8bit_adam:
         try:
-            import bitsandbytes as bnb # type: ignore
+            import bitsandbytes as bnb  # type: ignore
         except ImportError as exc:
             raise ImportError(
                 "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
@@ -759,7 +803,6 @@ def main(args):
             weight_decay=args.adam_weight_decay,
             eps=args.adam_epsilon,
         )
-
     params_ti_to_optimize = [
         {
             "params": text_encoder.get_input_embeddings().parameters(),
@@ -809,7 +852,6 @@ def main(args):
         center_crop=args.center_crop,
         return_reg_text=args.enable_text_reg,
         class_token=args.class_tokens,
-        reg_prompts=args.reg_prompts,
     )
 
     if args.with_prior_preservation:
@@ -977,7 +1019,7 @@ def main(args):
                 optimizer_ti.zero_grad()
                 global_step += 1
                 ti_logs = {"ti_loss": loss.detach().item()}
-                
+
                 ########################################### Norm Embedding ###########################################
                 with torch.no_grad():
                     # normalize embeddings
@@ -1049,8 +1091,12 @@ def main(args):
                     logs["epp_loss"] = epp_loss.detach().item()
 
                     for idx, module in enumerate(to_reg_params["other_loras"]):
-                        logs[f"{idx}_lora_up_weight_norm"] = (module.lora_up.weight.norm().detach().item())
-                        logs[f"{idx}_lora_down_weight_norm"] = (module.lora_down.weight.norm().detach().item())
+                        logs[f"{idx}_lora_up_weight_norm"] = (
+                            module.lora_up.weight.norm().detach().item()
+                        )
+                        logs[f"{idx}_lora_down_weight_norm"] = (
+                            module.lora_down.weight.norm().detach().item()
+                        )
 
                 accelerator.backward(loss)
 
@@ -1094,7 +1140,9 @@ def main(args):
                                 filename_text_encoder,
                                 target_replace_module=["CLIPAttention"],
                             )
-                            filename_ti = (f"{args.output_dir}/lora_weight_s{global_step}.ti.pt")
+                            filename_ti = (
+                                f"{args.output_dir}/lora_weight_s{global_step}.ti.pt"
+                            )
 
                             save_progress(
                                 unwarp_text_encoder,
@@ -1138,7 +1186,11 @@ def main(args):
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
-            if (args.log_evaluation and global_step % args.log_evaluation_step == 1 and accelerator.is_main_process):
+            if (
+                args.log_evaluation
+                and global_step % args.log_evaluation_step == 1
+                and accelerator.is_main_process
+            ):
 
                 with torch.no_grad():
                     pipe = StableDiffusionPipeline(
@@ -1180,7 +1232,7 @@ def main(args):
                 break
         if global_step >= args.max_train_steps:
             break
-        
+
     accelerator.wait_for_everyone()
 
     # Create the pipeline using the trained modules and save it.

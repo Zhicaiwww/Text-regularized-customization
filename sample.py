@@ -1,45 +1,52 @@
-import os, sys, time, json, datetime, math, pdb
-sys.path.append('/data/zhicai/code/Text-regularized-customization')
 import argparse
-import numpy as np
-from PIL import Image
-from tqdm.auto import tqdm
+import datetime
+import math
+import os
+import time
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from diffusers import EulerAncestralDiscreteScheduler, StableDiffusionPipeline
+from PIL import Image
 from pytorch_lightning import seed_everything
-from collections import defaultdict
-from diffusers import StableDiffusionPipeline, EulerAncestralDiscreteScheduler
+from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
+
 from lora_diffusion import patch_pipe, tune_lora_scale
 
 os.environ["DISABLE_TELEMETRY"] = 'YES'
 os.environ["HTTP_PROXY"] = "http://localhost:8890"
 os.environ["HTTPS_PROXY"] = "http://localhost:8890"
 
+
+
 '''
-CUDA_VISIBLE_DEVICES=2 python evaluation/sample.py \
+CUDA_VISIBLE_DEVICES=2 python sample.py \
     --prompts "Photo of a dog" \
     --n_img 50 \
     --outdir fig1/samoyed/_pretrained
 
-CUDA_VISIBLE_DEVICES=1 python evaluation/sample.py \
+CUDA_VISIBLE_DEVICES=1 python sample.py \
     --lora_ckpt 'logs/log_iper/person4/2023-12-28T23-03-27_person_baseline/lora_weight.safetensors' \
     --from_file prompts/TEMP.txt \
     --n_img 10
 
-CUDA_VISIBLE_DEVICES=1 python evaluation/sample.py \
+CUDA_VISIBLE_DEVICES=1 python sample.py \
     --lora_ckpt 'logs/Pick_Images/transferable_identifier/ratio=0.0/cat/2023-11-16T23-07-45_cat_textReg/lora_weight_s500.safetensors' \
     --from_file prompts/TEMP.txt \
     --n_img 10
 
-CUDA_VISIBLE_DEVICES=2 python evaluation/sample.py \
+CUDA_VISIBLE_DEVICES=1 python sample.py \
+    --lora_ckpt 'logs/results/dog/lora_weight_s2000.safetensors' \
+    --prompt "Photo of a <krk1> dog" \
+    --n_img 4 \
+    --outdir outputs/dog
+
+CUDA_VISIBLE_DEVICES=2 python sample.py \
     --lora_ckpt 'logs/Pick_Images/transferable_identifier/ratio=0.9/cat/2023-11-16T23-08-16_cat_textReg/lora_weight_s500.safetensors' \
     --from_file prompts/TEMP.txt \
     --n_img 10
 
-CUDA_VISIBLE_DEVICES=3 python evaluation/sample.py \
+CUDA_VISIBLE_DEVICES=3 python sample.py \
     --lora_ckpt 'logs/Pick_Images/transferable_identifier/pretrained' \
     --from_file prompts/TEMP.txt \
     --n_img 10
@@ -120,7 +127,7 @@ if __name__  == '__main__':
     if args.prompts is not None:
         prompt_list = [prompt for prompt in args.prompts.split(';') for _ in range(args.n_img)]
     elif args.from_file is not None:
-        with open(args.from_file, "r") as f:
+        with open(args.from_file, "r", encoding='utf-8') as f:
             data = f.read().splitlines()
             prompt_list = [prompt for prompt in data for _ in range(args.n_img)]
 
@@ -136,7 +143,10 @@ if __name__  == '__main__':
     del pipe
 
     for idx, img in enumerate(images):
-        img.save(os.path.join(save_path, "samples", f"{idx:05}_{prompt_list_maybe_shuffled[idx].replace(' ', '_')}.png"))
+        save_file_path = os.path.join(save_path, 'samples', f"{idx:05}_{prompt_list_maybe_shuffled[idx].replace(' ', '_')}.png")
+        print(f"Saving image {idx} at {save_file_path}")
+        img.save(save_file_path)
+        
     for i in range(0, len(images), batch_size**2):
         slice = images[i:i+batch_size**2]
         grid = image_grid(slice, cols=batch_size)
