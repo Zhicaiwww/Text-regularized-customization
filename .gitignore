@@ -10,7 +10,8 @@ logs/
 note_my/
 custom_datasets/
 trash/
-output/
+outputs/
+plot/
 .vscode/
 models/
 

@@ -31,15 +31,15 @@ CUDA_VISIBLE_DEVICES=1 python sample.py \
     --n_img 10
 
 CUDA_VISIBLE_DEVICES=1 python sample.py \
-    --lora_ckpt 'logs/Pick_Images/transferable_identifier/ratio=0.0/cat/2023-11-16T23-07-45_cat_textReg/lora_weight_s500.safetensors' \
+    --lora_ckpt '/data/zhicai/code/Text-regularized-customization/logs/results/backpack/lora_weight_s1300.safetensors' \
     --from_file prompts/TEMP.txt \
     --n_img 10
 
-CUDA_VISIBLE_DEVICES=1 python sample.py \
-    --lora_ckpt 'logs/results/dog/lora_weight_s2000.safetensors' \
-    --prompt "Photo of a <krk1> dog" \
+CUDA_VISIBLE_DEVICES=2 python sample.py \
+    --lora_ckpt '/data/zhicai/code/Text-regularized-customization/logs/results/backpack/lora_weight_s1300.safetensors' \
+    --prompt "Photo of a <krk1> backpack" \
     --n_img 4 \
-    --outdir outputs/dog
+    --outdir outputs/backpack
 
 CUDA_VISIBLE_DEVICES=2 python sample.py \
     --lora_ckpt 'logs/Pick_Images/transferable_identifier/ratio=0.9/cat/2023-11-16T23-08-16_cat_textReg/lora_weight_s500.safetensors' \

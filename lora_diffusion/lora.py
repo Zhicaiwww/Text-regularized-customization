@@ -62,30 +62,32 @@ class LoraInjectedLinear(nn.Module):
 
     def realize_as_lora(self):
         return self.lora_up.weight.data * self.scale, self.lora_down.weight.data
-   
-    def get_reg_loss(self,reg_vector = None):
+
+    def get_reg_loss(self, reg_vector=None):
         if reg_vector is None:
-            if hasattr(self, 'fisher'):
+            if hasattr(self, "fisher"):
                 weight_reg = (self.lora_up.weight.pow(2) * self.fisher).mean()
-            else: 
+            else:
                 # L2 norm of the weight matrix
                 weight_reg = self.lora_up.weight.pow(2).mean()
             return weight_reg
         else:
             lora_project_vector = self.lora_up(self.lora_down(reg_vector))
-            return torch.norm(lora_project_vector, dim =[1,2], p = 2).mean()
-        
+            return torch.norm(lora_project_vector, dim=[1, 2], p=2).mean()
+
     def update_fisher(self):
         # update fisher information of lora-up matrix
         # TODO
-        if not hasattr(self,'fisher'):
+        if not hasattr(self, "fisher"):
             self._fisher_steps = 1
-            # self.fisher = 
-            setattr(self,'fisher',self.lora_up.weight.grad.detach().pow(2))
+            # self.fisher =
+            setattr(self, "fisher", self.lora_up.weight.grad.detach().pow(2))
         else:
             self._fisher_steps += 1
             _a = self._fisher_steps
-            self.fisher = self.fisher*((_a-1)/_a) + self.lora_up.weight.grad.detach().pow(2)*(1/_a)
+            self.fisher = self.fisher * (
+                (_a - 1) / _a
+            ) + self.lora_up.weight.grad.detach().pow(2) * (1 / _a)
 
     def set_selector_from_diag(self, diag: torch.Tensor):
         # diag is a 1D tensor of size (r,)
@@ -269,7 +271,7 @@ def _find_modules_v3(
         LoraInjectedLinear,
         LoraInjectedConv2d,
     ],
-    filter_crossattn_str = 'full',
+    filter_crossattn_str="full",
 ):
     """
     Find all modules of a certain class (or union of classes) that are direct or
@@ -295,28 +297,43 @@ def _find_modules_v3(
         for fullname, module in ancestor.named_modules():
             if any([isinstance(module, _class) for _class in search_class]):
                 # Find the direct parent if this is a descendant, not a child, of target
-                if filter_crossattn_str == 'cross+self' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
-                    if 'to_k' in fullname or 'to_v' in fullname:
+                if (
+                    filter_crossattn_str == "cross+self"
+                    and ancestor.__class__.__name__ == "BasicTransformerBlock"
+                ):
+                    if "to_k" in fullname or "to_v" in fullname:
                         pass
                     else:
                         continue
-                elif filter_crossattn_str == 'cross' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
-                    if 'attn2.to_k' in fullname or 'attn2.to_v' in fullname:
+                elif (
+                    filter_crossattn_str == "cross"
+                    and ancestor.__class__.__name__ == "BasicTransformerBlock"
+                ):
+                    if "attn2.to_k" in fullname or "attn2.to_v" in fullname:
                         pass
                     else:
                         continue
-                elif filter_crossattn_str == 'cross-k' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
-                    if 'attn2.to_k' in fullname:
+                elif (
+                    filter_crossattn_str == "cross-k"
+                    and ancestor.__class__.__name__ == "BasicTransformerBlock"
+                ):
+                    if "attn2.to_k" in fullname:
                         pass
                     else:
                         continue
-                elif filter_crossattn_str == 'cross-v' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
-                    if 'attn2.to_v' in fullname:
+                elif (
+                    filter_crossattn_str == "cross-v"
+                    and ancestor.__class__.__name__ == "BasicTransformerBlock"
+                ):
+                    if "attn2.to_v" in fullname:
                         pass
                     else:
                         continue
-                elif filter_crossattn_str == 'self' and ancestor.__class__.__name__ == 'BasicTransformerBlock':
-                    if 'attn1.to_k' in fullname or 'attn1.to_v' in fullname:
+                elif (
+                    filter_crossattn_str == "self"
+                    and ancestor.__class__.__name__ == "BasicTransformerBlock"
+                ):
+                    if "attn1.to_k" in fullname or "attn1.to_v" in fullname:
                         pass
                     else:
                         continue
@@ -332,7 +349,6 @@ def _find_modules_v3(
                 # Otherwise, yield it
                 # parent.get_submodule(name) == module
                 yield parent, name, module
-
 
 
 def _find_modules_old(
@@ -406,7 +422,7 @@ def inject_trainable_lora(
             _module._modules[name].lora_down.weight = loras.pop(0)
 
         _module._modules[name].lora_up.weight.requires_grad = True
-        _module._modules[name].lora_down.weight.requires_grad = True 
+        _module._modules[name].lora_down.weight.requires_grad = True
         names.append(name)
 
     return require_grad_params, names
@@ -483,7 +499,9 @@ def inject_trainable_lora_extended(
     return require_grad_params, names
 
 
-def filter_unet_to_norm_weights(unet, target_replace_module=UNET_CROSSATTN_TARGET_REPLACE):
+def filter_unet_to_norm_weights(
+    unet, target_replace_module=UNET_CROSSATTN_TARGET_REPLACE
+):
     """
     filter out lora weights from unet
     returns :
@@ -492,38 +510,49 @@ def filter_unet_to_norm_weights(unet, target_replace_module=UNET_CROSSATTN_TARGE
         }
     """
 
-    child_modules = [_child_module for _,_,_child_module in \
-                                    _find_modules(
-                                        unet,
-                                        target_replace_module,
-                                        search_class=[LoraInjectedLinear, LoraInjectedConv2d])
+    child_modules = [
+        _child_module
+        for _, _, _child_module in _find_modules(
+            unet,
+            target_replace_module,
+            search_class=[LoraInjectedLinear, LoraInjectedConv2d],
+        )
     ]
-    child_cross_project_k_modules = [_child_module for _,_,_child_module in \
-                                            _find_modules(
-                                                unet,
-                                                target_replace_module,
-                                                search_class=[LoraInjectedLinear],
-                                                filter_crossattn_str='cross-k')
+    child_cross_project_k_modules = [
+        _child_module
+        for _, _, _child_module in _find_modules(
+            unet,
+            target_replace_module,
+            search_class=[LoraInjectedLinear],
+            filter_crossattn_str="cross-k",
+        )
     ]
-    child_cross_project_v_modules = [_child_module for _,_,_child_module in \
-                                            _find_modules(
-                                                unet,
-                                                target_replace_module,
-                                                search_class=[LoraInjectedLinear],
-                                                filter_crossattn_str='cross-v')
-    ]
-
-    lox_modules = [_child_module for _,_,_child_module in \
-                                            _find_modules(
-                                                unet,
-                                                target_replace_module,
-                                                search_class=[nn.Linear, LoraInjectedLinear],
-                                                filter_crossattn_str='cross'
-                                                )
+    child_cross_project_v_modules = [
+        _child_module
+        for _, _, _child_module in _find_modules(
+            unet,
+            target_replace_module,
+            search_class=[LoraInjectedLinear],
+            filter_crossattn_str="cross-v",
+        )
     ]
 
-    child_cross_project_modules = child_cross_project_k_modules + child_cross_project_v_modules
-    child_other_lora_modules = list(set(child_modules) - set(child_cross_project_modules)) 
+    lox_modules = [
+        _child_module
+        for _, _, _child_module in _find_modules(
+            unet,
+            target_replace_module,
+            search_class=[nn.Linear, LoraInjectedLinear],
+            filter_crossattn_str="cross",
+        )
+    ]
+
+    child_cross_project_modules = (
+        child_cross_project_k_modules + child_cross_project_v_modules
+    )
+    child_other_lora_modules = list(
+        set(child_modules) - set(child_cross_project_modules)
+    )
 
     filter_result = {
         "cross_project_loras": child_cross_project_modules,
@@ -533,6 +562,7 @@ def filter_unet_to_norm_weights(unet, target_replace_module=UNET_CROSSATTN_TARGE
         "other_loras": child_other_lora_modules,
     }
     return filter_result
+
 
 def extract_lora_ups_down(model, target_replace_module=DEFAULT_TARGET_REPLACE):
 
@@ -628,8 +658,16 @@ def save_safeloras_with_embeds(
             rank = _down.shape[0]
 
             metadata[f"{name}:{i}:rank"] = str(rank)
-            weights[f"{name}:{i}:up"] = _up + loras_unet_prev[2*i].to(_up.device) if (loras_unet_prev is not None) and (name == "unet") else _up
-            weights[f"{name}:{i}:down"] = _down + loras_unet_prev[2*i+1].to(_down.device) if (loras_unet_prev is not None) and (name == "unet") else _down
+            weights[f"{name}:{i}:up"] = (
+                _up + loras_unet_prev[2 * i].to(_up.device)
+                if (loras_unet_prev is not None) and (name == "unet")
+                else _up
+            )
+            weights[f"{name}:{i}:down"] = (
+                _down + loras_unet_prev[2 * i + 1].to(_down.device)
+                if (loras_unet_prev is not None) and (name == "unet")
+                else _down
+            )
 
     for token, tensor in embeds.items():
         metadata[token] = EMBED_FLAG
@@ -838,7 +876,10 @@ def monkeypatch_or_replace_lora(
     **kwargs,
 ):
     for _module, name, _child_module in _find_modules(
-        model, target_replace_module, search_class=[nn.Linear, LoraInjectedLinear],**kwargs
+        model,
+        target_replace_module,
+        search_class=[nn.Linear, LoraInjectedLinear],
+        **kwargs,
     ):
         _source = (
             _child_module.linear
@@ -881,15 +922,18 @@ def monkeypatch_or_replace_lora_extended(
     target_replace_module=DEFAULT_TARGET_REPLACE,
     r: Union[int, List[int]] = 4,
     **kwargs,
-    ):
+):
 
     for _module, name, _child_module in _find_modules(
         model,
         target_replace_module,
-        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d], **kwargs,
-        ):
+        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d],
+        **kwargs,
+    ):
 
-        if (_child_module.__class__ == nn.Linear) or (_child_module.__class__ == LoraInjectedLinear):
+        if (_child_module.__class__ == nn.Linear) or (
+            _child_module.__class__ == LoraInjectedLinear
+        ):
 
             if len(loras[0].shape) != 2:
                 continue
@@ -913,7 +957,9 @@ def monkeypatch_or_replace_lora_extended(
             if bias is not None:
                 _tmp.linear.bias = bias
 
-        elif (_child_module.__class__ == nn.Conv2d) or (_child_module.__class__ == LoraInjectedConv2d):
+        elif (_child_module.__class__ == nn.Conv2d) or (
+            _child_module.__class__ == LoraInjectedConv2d
+        ):
 
             if len(loras[0].shape) != 4:
                 continue
@@ -964,14 +1010,15 @@ def add_lora_params_to_model_by_lox(
     target_replace_module=DEFAULT_TARGET_REPLACE,
     r: Union[int, List[int]] = 4,
     **kwargs,
-    ):
+):
 
     for _module, name, _child_module in _find_modules(
         model,
         target_replace_module,
-        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d], **kwargs,
-        ):
-        
+        search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d],
+        **kwargs,
+    ):
+
         lora_prev = torch.matmul(loras.pop(0), loras.pop(0))
         _module._modules[name].weight.data += lora_prev
 
@@ -1114,7 +1161,9 @@ def apply_learned_embed_in_clip(
 
         # get the id for the token and assign the embeds
         token_id = tokenizer.convert_tokens_to_ids(token)
-        text_encoder.get_input_embeddings().weight.data[token_id] = learned_embeds[token]
+        text_encoder.get_input_embeddings().weight.data[token_id] = learned_embeds[
+            token
+        ]
 
     return token
 
@@ -1144,7 +1193,7 @@ def patch_pipe(
     unet_target_replace_module=DEFAULT_TARGET_REPLACE,
     text_target_replace_module=TEXT_ENCODER_DEFAULT_TARGET_REPLACE,
     **kwargs,
-    ):
+):
     if maybe_unet_path.endswith(".pt"):
         # torch format
 
