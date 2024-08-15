@@ -22,6 +22,15 @@ CUDA_VISIBLE_DEVICES=3 python evaluation/1_evaluate.py \
     --superclass bear_plushie \
     --data_dir custom_datasets/data/bear_plushie \
     --enable_saving
+
+CUDA_VISIBLE_DEVICES=1 python evaluation/1_evaluate.py \
+    --superclass 'backpack' \
+    --lora_ckpt 'logs/concept_set/backpack/2024-08-15T11-32-58_backpack_textReg' --ti_step 1000 \
+    --filter_crossattn_str 'cross' \
+    --data_dir 'custom_datasets/data/backpack' \
+    --placeholder '<krk1>' \
+    --batch_size 5 \
+    --enable_saving
 '''
 
 if __name__ == '__main__':

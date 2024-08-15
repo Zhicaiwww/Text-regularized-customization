@@ -10,10 +10,11 @@ from utils import *
 
 '''
 python train_formal.py \
-    --log_dir logs/log_iper \
-    --dataset IPER \
-    --required_mode 0 \
-    --gpu_ids 0
+    --log_dir logs/concept_set \
+    --dataset D --specific_classes "dog1"  \
+    --required_mode 3 \
+    --enable_eval \
+    --gpu_ids 1
 
 rsync -av --exclude="eval" --exclude="logs" --exclude="*lora_weight_s*" logs/log_formal_D /data/zhicai/code/Text-regularized-customization
 !@#$%^+lds@ustc123456
@@ -38,7 +39,7 @@ parser.add_argument('--specific_classes', type=str, default="")
 parser.add_argument('--enable_eval', action='store_true')
 # Hyperparameters
 parser.add_argument('--text_reg_alpha_weight', type=float, default=0.01)
-parser.add_argument('--text_reg_beta_weight', type=float, default=0.1)
+parser.add_argument('--text_reg_beta_weight', type=float, default=0.01)
 parser.add_argument('--mask_identifier_ratio', type=float, default=0.75)
 parser.add_argument('--ti_train_step', type=int, default=500)
 parser.add_argument('--unet_train_steps', type=int, default=500)
@@ -57,7 +58,7 @@ def train(args, target_name: str, superclass: str, mode: int, tag: str = "_"):
     try:
         print_box(f"Customization on '{target_name} : {superclass}' | mode {mode}")
         now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-        command = f"python training_scripts/train_lora_w_ti.py \
+        command = f"python train_lora_w_ti.py \
                         --pretrained_model_name_or_path 'models/stable-diffusion-v1-5' \
                         --instance_data_dir '{data_path}' \
                         --train_batch_size 1 \
@@ -75,7 +76,6 @@ def train(args, target_name: str, superclass: str, mode: int, tag: str = "_"):
                         --gradient_accumulation_steps 4 \
                         --lora_rank 10 \
                         --filter_crossattn_str 'cross' \
-                        --ti_reg_type 'decay' \
                         --mask_identifier_causal_attention \
                         --mask_identifier_ratio {args.mask_identifier_ratio} \
                         --local_files_only "
