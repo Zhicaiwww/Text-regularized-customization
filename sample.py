@@ -36,10 +36,10 @@ CUDA_VISIBLE_DEVICES=1 python sample.py \
     --n_img 10
 
 CUDA_VISIBLE_DEVICES=2 python sample.py \
-    --lora_ckpt '/data/zhicai/code/Text-regularized-customization/logs/results/backpack/lora_weight_s1300.safetensors' \
+    --lora_ckpt '/data/zhicai/code/Text-regularized-customization/logs/results/backpack/lora_weight_s500.safetensors' \
     --prompt "Photo of a <krk1> backpack" \
     --n_img 4 \
-    --outdir outputs/backpack
+    --outdir outputs/backpack_s500
 
 CUDA_VISIBLE_DEVICES=2 python sample.py \
     --lora_ckpt 'logs/Pick_Images/transferable_identifier/ratio=0.9/cat/2023-11-16T23-08-16_cat_textReg/lora_weight_s500.safetensors' \

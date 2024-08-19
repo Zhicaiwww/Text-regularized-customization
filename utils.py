@@ -315,7 +315,7 @@ IMAGENET_TEMPLATES_TINY = [
     "a photo of a {}",
     ]
 IMAGENET_STYLE_TEMPLATES_TINY = [
-    "a photo of a {}",
+    "a photo in the style of {}",
     ]
 IMAGENET_TEMPLATES_SMALL = [
     "a photo of a {}",
